@@ -16,6 +16,14 @@ type ApiState = {
 export function ApiIdentityPanel() {
   const [state, setState] = useState<ApiState>({ status: "idle" })
 
+  function resolveApiBaseUrl() {
+    if (typeof window === "undefined") {
+      return publicEnv.apiBaseUrl
+    }
+
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+
   async function verifyIdentity() {
     setState({ status: "loading" })
 
@@ -30,7 +38,7 @@ export function ApiIdentityPanel() {
         return
       }
 
-      const response = await fetch(`${publicEnv.apiBaseUrl}/api/v1/me`, {
+      const response = await fetch(`${resolveApiBaseUrl()}/api/v1/me`, {
         headers: {
           Authorization: `Bearer ${tokenResponse.data.token}`,
         },
