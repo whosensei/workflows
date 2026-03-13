@@ -144,6 +144,32 @@ CREATE TABLE IF NOT EXISTS workflow_transition_definition (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS workflow_step_mapping (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    step_definition_id uuid NOT NULL UNIQUE REFERENCES workflow_step_definition(id) ON DELETE CASCADE,
+    child_workflow_definition_id uuid REFERENCES workflow_definition(id) ON DELETE SET NULL,
+    child_workflow_version_id uuid REFERENCES workflow_definition_version(id) ON DELETE SET NULL,
+    trigger_mode text NOT NULL DEFAULT 'sync_wait',
+    input_mapping jsonb NOT NULL DEFAULT '{}'::jsonb,
+    output_mapping jsonb NOT NULL DEFAULT '{}'::jsonb,
+    completion_action text,
+    failure_action text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notification_template (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workflow_version_id uuid NOT NULL REFERENCES workflow_definition_version(id) ON DELETE CASCADE,
+    step_definition_id uuid REFERENCES workflow_step_definition(id) ON DELETE SET NULL,
+    event_type text NOT NULL,
+    channel text NOT NULL DEFAULT 'in_app',
+    title_template text NOT NULL,
+    body_template text NOT NULL,
+    allow_actor_override boolean NOT NULL DEFAULT true,
+    supported_variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS workflow_instance (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     workflow_version_id uuid NOT NULL REFERENCES workflow_definition_version(id) ON DELETE RESTRICT,
@@ -158,6 +184,15 @@ CREATE TABLE IF NOT EXISTS workflow_instance (
     parent_step_instance_id uuid,
     lock_version integer NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workflow_instance_data (
+    workflow_instance_id uuid PRIMARY KEY REFERENCES workflow_instance(id) ON DELETE CASCADE,
+    input_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+    context_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+    output_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+    last_error jsonb,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -210,6 +245,27 @@ CREATE TABLE IF NOT EXISTS workflow_action (
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     idempotency_key text UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS workflow_status_history (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workflow_instance_id uuid NOT NULL REFERENCES workflow_instance(id) ON DELETE CASCADE,
+    old_status text,
+    new_status text NOT NULL,
+    reason text,
+    changed_by_action_id uuid REFERENCES workflow_action(id) ON DELETE SET NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS subworkflow_link (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_workflow_instance_id uuid NOT NULL REFERENCES workflow_instance(id) ON DELETE CASCADE,
+    parent_step_instance_id uuid NOT NULL REFERENCES step_instance(id) ON DELETE CASCADE,
+    child_workflow_instance_id uuid NOT NULL REFERENCES workflow_instance(id) ON DELETE CASCADE,
+    link_status text NOT NULL DEFAULT 'running',
+    resume_action text,
+    linked_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS notification (
