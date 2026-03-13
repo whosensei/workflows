@@ -22,6 +22,7 @@ This first draft assumes:
 
 - backend: Python + FastAPI,
 - frontend: Next.js + shadcn/ui,
+- auth: Better Auth with email/password on the Next.js side,
 - package management: `uv` for Python and `pnpm` for the web app,
 - queue: RabbitMQ for async dispatch,
 - database: PostgreSQL as the system of record.
@@ -31,7 +32,7 @@ This first draft assumes:
 Use a monorepo layout so the workflow schema, API contracts, and UI evolve together.
 
 - `apps/api` - FastAPI app, SQLAlchemy models, Alembic migrations, workflow engine, workers
-- `apps/web` - Next.js app, shadcn/ui workflow builder and runtime inbox
+- `apps/web` - Next.js app, shadcn/ui workflow builder, runtime inbox, and Better Auth server
 - `packages/contracts` - shared JSON schema or typed API contracts
 - `packages/docs` - architecture notes, ADRs, sample workflow definitions
 - `infra` - local Docker compose for Postgres and RabbitMQ
@@ -42,7 +43,8 @@ Recommended setup steps for the next implementation pass:
 2. initialize the web app with `pnpm dlx shadcn@latest init --preset ac2FTn --template next`,
 3. initialize the FastAPI app with `uv init`,
 4. add Docker compose for PostgreSQL and RabbitMQ,
-5. add Alembic migrations before building runtime logic.
+5. wire Better Auth email/password and JWT support in the web app,
+6. add Alembic migrations before building runtime logic.
 
 ## 3. Core domain model
 
@@ -587,10 +589,85 @@ Tracks how many times each step has been entered and how it finishes.
 - `workflow_counter_rollup`
 - `workflow_step_counter_rollup`
 
+## 7.1 Authentication model
+
+Use Better Auth for email/password sign-up and sign-in so you can create multiple real users and test assignee flows end-to-end.
+
+### Auth architecture
+
+- Next.js hosts the Better Auth handler and login UI,
+- Better Auth manages browser sessions for the web app,
+- Better Auth also issues JWT bearer tokens for API calls,
+- FastAPI validates Better Auth JWTs and uses the resolved user identity for workflow actions,
+- workflow tables reference the Better Auth user id as the actor/assignee identity.
+
+This is the clean split:
+
+- web auth and session handling stay in TypeScript where Better Auth runs natively,
+- workflow execution and APIs stay in FastAPI,
+- FastAPI does not try to validate raw Better Auth session cookies directly.
+
+### Recommended Better Auth tables
+
+Keep auth tables separate from workflow tables. The simplest approach is an `auth` schema or at least a clearly separated auth migration set.
+
+Core Better Auth tables:
+
+- `user`
+- `session`
+- `account`
+- `verification`
+
+JWT plugin table:
+
+- `jwks`
+
+Recommended user extensions:
+
+- `role` - for workflow assignment and admin screens,
+- `is_test_user` - flag seeded test identities,
+- `display_name` - optional nicer display if different from auth name.
+
+### Auth flow between web and API
+
+1. User signs in with Better Auth email/password in Next.js.
+2. Next.js stores the Better Auth session cookie.
+3. The web client requests a Better Auth token for backend API calls.
+4. The frontend sends `Authorization: Bearer <token>` to FastAPI.
+5. FastAPI verifies the JWT using Better Auth issuer/audience and JWKS data.
+6. FastAPI resolves the user id from the token and applies workflow authorization rules.
+
+This lets you log in as different users and test:
+
+- task inbox visibility,
+- priority escalation,
+- approve-any versus approve-all behavior,
+- audit history per actor,
+- notification delivery per assignee.
+
+### Test-user strategy
+
+Add a dev seed flow so you can quickly test multiple approval paths:
+
+- `admin@example.com`
+- `manager@example.com`
+- `reviewer1@example.com`
+- `reviewer2@example.com`
+- `requester@example.com`
+
+Seed them with known passwords in local development only and mark them with `is_test_user = true`.
+
+Recommended extras:
+
+- a dev-only seed command to recreate these users,
+- a small admin screen showing current auth users and roles,
+- easy reassignment of workflow step associations to these seeded users.
+
 ## 8. FastAPI service design
 
 ## 8.1 API modules
 
+- `GET /me`
 - `POST /workflow-definitions`
 - `POST /workflow-definitions/{id}/versions`
 - `POST /workflow-definitions/{id}/publish`
@@ -609,6 +686,7 @@ Tracks how many times each step has been entered and how it finishes.
 ## 8.2 Backend modules
 
 - `app/api` - route handlers
+- `app/auth` - Better Auth JWT verification, user context extraction
 - `app/models` - SQLAlchemy models
 - `app/schemas` - Pydantic schemas
 - `app/engine` - workflow executor and transition resolver
@@ -620,6 +698,7 @@ Tracks how many times each step has been entered and how it finishes.
 
 Core rules for correctness:
 
+- every protected API call resolves the user from a verified Better Auth token,
 - all state changes happen inside transactions,
 - action handlers use idempotency keys,
 - only one active step instance at a time unless parallelism is explicitly added later,
@@ -670,6 +749,8 @@ Initialize the UI with the requested shadcn preset and build these first screens
 
 ### Runtime screens
 
+- sign-in page
+- sign-up page
 - workflow instance list
 - workflow instance detail with timeline
 - workflow action history table
@@ -722,6 +803,9 @@ The builder should generate a canonical JSON document from steps and transitions
 - set up monorepo,
 - create FastAPI app with `uv`,
 - create Next.js app with the requested shadcn theme,
+- configure Better Auth with email/password,
+- enable Better Auth JWT issuance for FastAPI,
+- add seeded local test users for multi-user approval testing,
 - provision Postgres and RabbitMQ locally,
 - add base auth/user model assumptions.
 
@@ -770,6 +854,7 @@ These are not all required on day one, but they will improve the system signific
 ### Must-have improvements
 
 - workflow versioning with immutable runtime references
+- Better Auth email/password with seeded multi-user local accounts
 - optimistic locking on runtime rows
 - idempotency keys for all action endpoints
 - full audit log for every action and status change
@@ -781,6 +866,8 @@ These are not all required on day one, but they will improve the system signific
 
 ### Very valuable next improvements
 
+- forgot-password and email verification flows
+- admin role management for step assignments
 - delegation and reassignment
 - comments and attachments on approvals
 - due dates and escalation rules
@@ -837,15 +924,17 @@ That gives flexibility for:
 
 For the first working MVP, I would ship exactly this:
 
-1. workflow definition + versioning,
-2. human task steps,
-3. approve/reject/revert transitions,
-4. runtime persistence,
-5. in-app notifications,
-6. RabbitMQ-backed outbox delivery,
-7. subworkflow mapping with parent pause/resume,
-8. timeline/history screen,
-9. my tasks inbox.
+1. Better Auth email/password authentication,
+2. seeded test users for local multi-user login,
+3. workflow definition + versioning,
+4. human task steps,
+5. approve/reject/revert transitions,
+6. runtime persistence,
+7. in-app notifications,
+8. RabbitMQ-backed outbox delivery,
+9. subworkflow mapping with parent pause/resume,
+10. timeline/history screen,
+11. my tasks inbox.
 
 That scope is already enough to support long-running business approval flows safely.
 
