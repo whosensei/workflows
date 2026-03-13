@@ -9,14 +9,13 @@ import {
   type Edge,
   type Node,
 } from "@xyflow/react"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import {
   Table,
   TableBody,
@@ -485,7 +484,7 @@ export function WorkflowBuilder() {
     return tokenResponse.data.token
   }
 
-  async function loadDefinitions() {
+  const loadDefinitions = useCallback(async () => {
     setIsLoadingDefinitions(true)
     setError(null)
 
@@ -508,11 +507,11 @@ export function WorkflowBuilder() {
     } finally {
       setIsLoadingDefinitions(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     void loadDefinitions()
-  }, [])
+  }, [loadDefinitions])
 
   async function handleSave() {
     setIsSaving(true)
@@ -535,20 +534,26 @@ export function WorkflowBuilder() {
         | { detail?: { errors?: string[] } | string }
 
       if (!response.ok) {
+        const errorDetail = "detail" in payload ? payload.detail : undefined
+
         if (
-          typeof payload.detail === "object" &&
-          payload.detail !== null &&
-          "errors" in payload.detail &&
-          Array.isArray(payload.detail.errors)
+          typeof errorDetail === "object" &&
+          errorDetail !== null &&
+          "errors" in errorDetail &&
+          Array.isArray(errorDetail.errors)
         ) {
-          throw new Error(payload.detail.errors.join(" "))
+          throw new Error(errorDetail.errors.join(" "))
         }
 
-        if (typeof payload.detail === "string") {
-          throw new Error(payload.detail)
+        if (typeof errorDetail === "string") {
+          throw new Error(errorDetail)
         }
 
         throw new Error("Unable to save workflow definition.")
+      }
+
+      if (!("item" in payload)) {
+        throw new Error("The API did not return the created workflow definition.")
       }
 
       setSelectedDefinitionId(payload.item.id)
