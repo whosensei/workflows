@@ -27,10 +27,16 @@ Foundation for the async workflow engine described in `docs/async-workflow-engin
    - `pnpm dev:web`
 7. Seed local users after the web app is running:
    - `pnpm --dir apps/web seed:users`
+8. Publish queued outbox events to RabbitMQ when needed:
+   - `pnpm queue:publish`
+9. Release next priority-chain assignees whose escalation timers expired:
+   - `pnpm queue:release`
 
 ## Current implementation slice
 
 - Better Auth email/password login shell
 - FastAPI service with Better Auth JWT verification
-- React Flow workflow preview on the dashboard
+- Workflow definition builder saved in Neon
+- Runtime console for instances, tasks, notifications, and action history
+- RabbitMQ outbox publisher and priority-chain release worker
 - Bootstrap SQL for Better Auth core tables and first workflow tables on Neon

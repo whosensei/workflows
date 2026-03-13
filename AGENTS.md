@@ -37,6 +37,10 @@
   - `pnpm dev:web`
 - Seed Better Auth test users:
   - `pnpm --dir apps/web seed:users`
+- Publish outbox events to RabbitMQ:
+  - `pnpm queue:publish`
+- Release queued priority-chain tasks:
+  - `pnpm queue:release`
 
 ### Local test users
 
