@@ -55,6 +55,9 @@ export default async function Page() {
                 <Link href="/builder">Open workflow builder</Link>
               </Button>
               <Button asChild size="lg" variant="outline">
+                <Link href="/operations">Open runtime console</Link>
+              </Button>
+              <Button asChild size="lg" variant="outline">
                 <Link href="/sign-in">Sign in</Link>
               </Button>
             </div>

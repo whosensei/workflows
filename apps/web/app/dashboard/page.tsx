@@ -75,6 +75,9 @@ export default async function DashboardPage() {
             <Button asChild variant="outline">
               <Link href="/builder">Open builder</Link>
             </Button>
+            <Button asChild variant="outline">
+              <Link href="/operations">Runtime operations</Link>
+            </Button>
             <SignOutButton />
           </div>
         </section>
