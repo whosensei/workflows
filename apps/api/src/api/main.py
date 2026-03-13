@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import AuthenticatedUser, get_current_user
 from api.config import Settings, get_settings
+from api.workflows import router as workflow_router
 
 
 def create_app() -> FastAPI:
@@ -24,6 +25,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(workflow_router)
 
     @app.get("/", tags=["system"])
     def root(config: Settings = Depends(get_settings)) -> dict:
@@ -65,6 +67,7 @@ def create_app() -> FastAPI:
                 "better-auth-jwt-verification",
                 "react-flow-workflow-preview",
                 "email-password-login-shell",
+                "workflow-definition-crud",
                 "docker-compose-infra",
             ],
             "webAppUrl": config.web_app_url,

@@ -52,6 +52,9 @@ export default async function Page() {
                 <Link href="/sign-up">Create a test user</Link>
               </Button>
               <Button asChild size="lg" variant="outline">
+                <Link href="/builder">Open workflow builder</Link>
+              </Button>
+              <Button asChild size="lg" variant="outline">
                 <Link href="/sign-in">Sign in</Link>
               </Button>
             </div>
@@ -71,8 +74,8 @@ export default async function Page() {
                   <li>Next.js app with the requested shadcn preset</li>
                   <li>Better Auth email/password login shell</li>
                   <li>FastAPI service with token verification entry point</li>
-                  <li>Workflow dashboard cards and React Flow preview</li>
-                  <li>Postgres/RabbitMQ local infrastructure config</li>
+                  <li>Workflow builder forms with Neon-backed persistence</li>
+                  <li>Neon database and local RabbitMQ queue config</li>
                 </ul>
               </div>
               <p className="text-xs">

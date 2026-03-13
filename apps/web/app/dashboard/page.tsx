@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 
@@ -17,6 +18,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { auth } from "@/lib/auth"
+import { Button } from "@/components/ui/button"
 
 const activityRows = [
   {
@@ -69,7 +71,12 @@ export default async function DashboardPage() {
             </div>
           </div>
 
-          <SignOutButton />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button asChild variant="outline">
+              <Link href="/builder">Open builder</Link>
+            </Button>
+            <SignOutButton />
+          </div>
         </section>
 
         <section className="grid gap-4 lg:grid-cols-4">
@@ -79,7 +86,7 @@ export default async function DashboardPage() {
               <CardTitle className="text-3xl">1</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              One seeded workflow shell is ready for the visual builder.
+              Use the builder page to create and persist real definitions in Neon.
             </CardContent>
           </Card>
           <Card className="border-border/70">
@@ -106,7 +113,7 @@ export default async function DashboardPage() {
               <CardTitle className="text-3xl">RabbitMQ</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              Docker compose includes local queue infrastructure for notifications and resumptions.
+              RabbitMQ stays local while PostgreSQL runs in Neon.
             </CardContent>
           </Card>
         </section>
