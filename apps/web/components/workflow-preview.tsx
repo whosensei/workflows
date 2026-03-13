@@ -3,8 +3,9 @@
 import "@xyflow/react/dist/style.css"
 
 import { Background, MarkerType, ReactFlow } from "@xyflow/react"
+import type { Edge, Node } from "@xyflow/react"
 
-const nodes = [
+const nodes: Node[] = [
   {
     id: "start",
     position: { x: 0, y: 110 },
@@ -35,14 +36,14 @@ const nodes = [
     data: { label: "Rejected" },
     style: nodeStyle("Rejected"),
   },
-] as const
+] 
 
-const edges = [
+const edges: Edge[] = [
   edge("start", "manager", "submit"),
   edge("manager", "subworkflow", "approve"),
   edge("manager", "reject", "reject"),
   edge("subworkflow", "end", "complete"),
-] as const
+]
 
 function edge(source: string, target: string, label: string) {
   return {

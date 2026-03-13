@@ -59,7 +59,7 @@ export function AuthCard({ mode }: AuthCardProps) {
         })
 
         if (result.error) {
-          setError(result.error.message)
+          setError(result.error.message ?? "Unable to create the account.")
           return
         }
       } else {
@@ -70,7 +70,7 @@ export function AuthCard({ mode }: AuthCardProps) {
         })
 
         if (result.error) {
-          setError(result.error.message)
+          setError(result.error.message ?? "Unable to sign in with those credentials.")
           return
         }
       }

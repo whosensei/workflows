@@ -8,7 +8,6 @@ import { Pool } from "pg"
 import { serverEnv } from "@/lib/server-env"
 
 declare global {
-  // eslint-disable-next-line no-var
   var __workflowAuthPool: Pool | undefined
 }
 
