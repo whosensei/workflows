@@ -13,6 +13,8 @@ for (const user of users) {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      origin: baseUrl,
+      referer: `${baseUrl}/sign-up`,
     },
     body: JSON.stringify(user),
   })
