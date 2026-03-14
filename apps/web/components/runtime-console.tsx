@@ -1,7 +1,7 @@
 "use client"
 
 import type { Edge, Node } from "@xyflow/react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -126,6 +126,15 @@ type Notification = {
 }
 
 type TaskActionType = "approve" | "reject" | "revert" | "custom"
+type RealtimeStatus = "connecting" | "connected" | "disconnected"
+type RealtimeEvent = {
+  id: string
+  type: string
+  channels: string[]
+  workflowInstanceId?: string | null
+  notificationId?: string | null
+  occurredAt: string
+}
 
 function resolveApiBaseUrl() {
   if (typeof window === "undefined") {
@@ -143,6 +152,45 @@ function formatDate(value: string | null) {
   return new Date(value).toLocaleString()
 }
 
+function parseSseBlock(block: string) {
+  const lines = block.split(/\r?\n/)
+  let eventName = "message"
+  const dataLines: string[] = []
+
+  for (const line of lines) {
+    if (!line || line.startsWith(":")) {
+      continue
+    }
+
+    const separatorIndex = line.indexOf(":")
+    const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex)
+    const rawValue = separatorIndex === -1 ? "" : line.slice(separatorIndex + 1)
+    const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue
+
+    if (field === "event") {
+      eventName = value
+    }
+    if (field === "data") {
+      dataLines.push(value)
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null
+  }
+
+  return {
+    eventName,
+    data: dataLines.join("\n"),
+  }
+}
+
+async function waitFor(milliseconds: number) {
+  await new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds)
+  })
+}
+
 export function RuntimeConsole() {
   const [definitions, setDefinitions] = useState<WorkflowDefinitionSummary[]>([])
   const [instances, setInstances] = useState<WorkflowInstanceSummary[]>([])
@@ -155,6 +203,7 @@ export function RuntimeConsole() {
   const [status, setStatus] = useState("Loading workflow runtime data...")
   const [error, setError] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting")
 
   const summary = useMemo(
     () => ({
@@ -167,13 +216,13 @@ export function RuntimeConsole() {
     [definitions, instances, notifications, tasks],
   )
 
-  async function getToken() {
+  const getToken = useCallback(async () => {
     const tokenResponse = await authClient.token()
     if (tokenResponse.error || !tokenResponse.data?.token) {
       throw new Error(tokenResponse.error?.message ?? "No Better Auth token available.")
     }
     return tokenResponse.data.token
-  }
+  }, [])
 
   const authedFetch = useCallback(async (path: string, init?: RequestInit) => {
     const token = await getToken()
@@ -280,9 +329,11 @@ export function RuntimeConsole() {
     }
   }
 
-  async function loadInstanceDetail(instanceId: string) {
-    setIsBusy(true)
-    setError(null)
+  async function loadInstanceDetail(instanceId: string, options?: { silent?: boolean }) {
+    if (!options?.silent) {
+      setIsBusy(true)
+      setError(null)
+    }
 
     try {
       const response = await authedFetch(`/api/v1/workflow-instances/${instanceId}`, {
@@ -293,11 +344,17 @@ export function RuntimeConsole() {
         throw new Error(payload.detail ?? "Unable to load workflow instance detail.")
       }
       setSelectedInstance(payload.item)
-      setStatus(`Loaded workflow instance ${instanceId}.`)
+      if (!options?.silent) {
+        setStatus(`Loaded workflow instance ${instanceId}.`)
+      }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unable to load workflow instance.")
+      if (!options?.silent) {
+        setError(loadError instanceof Error ? loadError.message : "Unable to load workflow instance.")
+      }
     } finally {
-      setIsBusy(false)
+      if (!options?.silent) {
+        setIsBusy(false)
+      }
     }
   }
 
@@ -366,6 +423,116 @@ export function RuntimeConsole() {
     }
   }
 
+  const handleRealtimeEvent = useEffectEvent(async (event: RealtimeEvent) => {
+    const channels = new Set(event.channels)
+    const refreshes: Promise<unknown>[] = []
+
+    if (channels.has("instances")) {
+      refreshes.push(loadInstances())
+    }
+    if (channels.has("tasks")) {
+      refreshes.push(loadTasks())
+    }
+    if (channels.has("notifications")) {
+      refreshes.push(loadNotifications())
+    }
+
+    if (refreshes.length > 0) {
+      await Promise.all(refreshes)
+    }
+
+    if (
+      selectedInstance &&
+      channels.has("instances") &&
+      (!event.workflowInstanceId || event.workflowInstanceId === selectedInstance.id)
+    ) {
+      await loadInstanceDetail(selectedInstance.id, { silent: true })
+    }
+  })
+
+  useEffect(() => {
+    let isActive = true
+    let abortController: AbortController | null = null
+
+    async function connectRealtimeStream() {
+      while (isActive) {
+        abortController = new AbortController()
+
+        try {
+          setRealtimeStatus("connecting")
+          const token = await getToken()
+          const response = await fetch(`${resolveApiBaseUrl()}/api/v1/events`, {
+            method: "GET",
+            cache: "no-store",
+            headers: {
+              Accept: "text/event-stream",
+              Authorization: `Bearer ${token}`,
+            },
+            signal: abortController.signal,
+          })
+
+          if (!response.ok || !response.body) {
+            throw new Error("Unable to open realtime update stream.")
+          }
+
+          setRealtimeStatus("connected")
+
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ""
+
+          while (isActive) {
+            const { done, value } = await reader.read()
+            if (done) {
+              break
+            }
+
+            buffer += decoder.decode(value, { stream: true })
+            const blocks = buffer.split("\n\n")
+            buffer = blocks.pop() ?? ""
+
+            for (const block of blocks) {
+              const message = parseSseBlock(block)
+              if (!message || message.eventName !== "realtime") {
+                continue
+              }
+
+              try {
+                const payload = JSON.parse(message.data) as RealtimeEvent
+                await handleRealtimeEvent(payload)
+              } catch {
+                continue
+              }
+            }
+          }
+        } catch (streamError) {
+          if (!isActive) {
+            return
+          }
+
+          if (!(streamError instanceof DOMException && streamError.name === "AbortError")) {
+            setRealtimeStatus("disconnected")
+          } else {
+            return
+          }
+        }
+
+        if (!isActive) {
+          return
+        }
+
+        await waitFor(2000)
+      }
+    }
+
+    void connectRealtimeStream()
+
+    return () => {
+      isActive = false
+      abortController?.abort()
+    }
+  }, [getToken])
+
   return (
     <div className="space-y-6">
       <section className="grid gap-4 lg:grid-cols-4">
@@ -416,6 +583,9 @@ export function RuntimeConsole() {
             </CardDescription>
           </div>
           <div className="flex gap-3">
+            <Badge variant={realtimeStatus === "connected" ? "secondary" : "outline"}>
+              Live {realtimeStatus}
+            </Badge>
             <Button onClick={() => void refreshAll()} variant="outline">
               Refresh data
             </Button>

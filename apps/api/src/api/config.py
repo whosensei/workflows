@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     outbox_poll_interval_seconds: float = 0.5
     outbox_claim_ttl_seconds: int = 60
     outbox_max_attempts_default: int = 20
+    realtime_channel: str = "workflow_realtime"
+    realtime_database_url: str | None = None
+    realtime_heartbeat_seconds: int = 15
     priority_release_batch_size: int = 100
     priority_release_poll_interval_seconds: float = 5.0
     priority_release_advisory_lock_id: int = 54001

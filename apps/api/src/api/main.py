@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import AuthenticatedUser, get_current_user
 from api.config import Settings, get_settings
+from api.realtime import router as realtime_router
 from api.runtime import router as runtime_router
 from api.workflows import router as workflow_router
 
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(workflow_router)
     app.include_router(runtime_router)
+    app.include_router(realtime_router)
 
     @app.get("/", tags=["system"])
     def root(config: Settings = Depends(get_settings)) -> dict:

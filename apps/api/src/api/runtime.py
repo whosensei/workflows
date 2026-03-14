@@ -9,6 +9,7 @@ from psycopg.types.json import Json
 
 from api.auth import AuthenticatedUser, get_current_user
 from api.db import get_db_connection
+from api.realtime import publish_realtime_event
 from api.runtime_schemas import (
     HumanTaskListResponse,
     HumanTaskResponse,
@@ -116,6 +117,14 @@ def _create_notification(
             "title": title,
             "body": body,
         },
+    )
+    publish_realtime_event(
+        cursor,
+        "runtime.notifications.changed",
+        channels=["notifications"],
+        users=[user_id],
+        workflow_instance_id=str(workflow_instance_id) if workflow_instance_id else None,
+        notification_id=str(notification_id),
     )
 
 
@@ -521,6 +530,13 @@ def _create_human_tasks(cursor, workflow_instance, step_instance, step_definitio
         WHERE id = %s
         """,
         (step_instance["id"],),
+    )
+    publish_realtime_event(
+        cursor,
+        "runtime.tasks.changed",
+        channels=["instances", "tasks"],
+        workflow_instance_id=str(workflow_instance["id"]),
+        broadcast=True,
     )
 
     return active_user_ids
@@ -1162,6 +1178,13 @@ def start_workflow_instance(
 
             start_step = _get_start_step(cursor, version["id"])
             _enter_step(cursor, workflow_instance, start_step, "approve")
+            publish_realtime_event(
+                cursor,
+                "runtime.instances.changed",
+                channels=["instances"],
+                workflow_instance_id=str(workflow_instance["id"]),
+                broadcast=True,
+            )
             connection.commit()
 
     return WorkflowInstanceResponse(item=_load_instance_detail(workflow_instance["id"]))
@@ -1507,6 +1530,13 @@ def _apply_task_action(
             "actorUserId": user.user_id,
         },
     )
+    publish_realtime_event(
+        cursor,
+        "runtime.workflow.changed",
+        channels=["instances", "tasks"],
+        workflow_instance_id=str(task_row["workflow_instance_id"]),
+        broadcast=True,
+    )
 
     return WorkflowTaskActionResponse(
         workflowInstanceId=task_row["workflow_instance_id"],
@@ -1701,6 +1731,16 @@ def mark_notification_read(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Notification not found.",
                 )
+            publish_realtime_event(
+                cursor,
+                "runtime.notifications.changed",
+                channels=["notifications"],
+                users=[user.user_id],
+                workflow_instance_id=str(row["workflow_instance_id"])
+                if row["workflow_instance_id"]
+                else None,
+                notification_id=str(row["id"]),
+            )
             connection.commit()
 
     return NotificationResponse(

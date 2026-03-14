@@ -7,6 +7,7 @@ from typing import Any
 
 from api.config import Settings, get_settings
 from api.db import get_db_connection
+from api.realtime import publish_realtime_event
 from api.runtime import _create_notification, _record_outbox
 
 
@@ -157,6 +158,14 @@ def run_once(settings: Settings | None = None) -> int:
                     )
 
                 released += 1
+
+            if released > 0:
+                publish_realtime_event(
+                    cursor,
+                    "runtime.priority_release.changed",
+                    channels=["instances", "tasks"],
+                    broadcast=True,
+                )
 
         connection.commit()
 

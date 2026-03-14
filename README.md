@@ -17,6 +17,7 @@ Foundation for the async workflow engine described in `docs/async-workflow-engin
 2. Put your Neon connection string into both:
    - `apps/web/.env.local` as `DATABASE_URL`
    - `apps/api/.env` as `WORKFLOW_DATABASE_URL`
+   - if your Neon app URL is a pooled connection string, set `REALTIME_DATABASE_URL` in `apps/api/.env` to a direct/session-capable Postgres URL for the SSE listener
 3. Bootstrap the Neon database schema:
    - `bash -lc 'export PATH="$HOME/.local/bin:$PATH" && uv run --project apps/api python apps/api/scripts/bootstrap_neon.py'`
 4. Start queue infra:
