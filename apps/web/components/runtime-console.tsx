@@ -1,5 +1,6 @@
 "use client"
 
+import type { Edge, Node } from "@xyflow/react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
@@ -85,8 +86,8 @@ type WorkflowInstanceDetail = WorkflowInstanceSummary & {
     }>
   }
   builderLayout: {
-    nodes?: unknown[]
-    edges?: unknown[]
+    nodes?: Node[]
+    edges?: Edge[]
   }
   steps: WorkflowStepVisit[]
   actions: WorkflowAction[]
