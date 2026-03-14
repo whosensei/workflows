@@ -133,6 +133,9 @@ function buildEdges(graphJson: WorkflowGraphProps["graphJson"]): Edge[] {
         fontSize: 12,
         fontWeight: 600,
       },
+      labelBgStyle: {
+        fill: "var(--background)",
+      },
     }))
 }
 

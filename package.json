@@ -8,6 +8,10 @@
     "dev:api": "bash -lc 'export PATH=\"$HOME/.local/bin:$PATH\" && uv run --project apps/api uvicorn api.main:app --reload --host 0.0.0.0 --port 8000'",
     "queue:publish": "bash -lc 'export PATH=\"$HOME/.local/bin:$PATH\" && uv run --project apps/api python apps/api/scripts/publish_outbox.py'",
     "queue:release": "bash -lc 'export PATH=\"$HOME/.local/bin:$PATH\" && uv run --project apps/api python apps/api/scripts/release_priority_tasks.py'",
+    "worker:outbox": "bash -lc 'export PATH=\"$HOME/.local/bin:$PATH\" && uv run --project apps/api python apps/api/scripts/outbox_worker.py'",
+    "worker:priority": "bash -lc 'export PATH=\"$HOME/.local/bin:$PATH\" && uv run --project apps/api python apps/api/scripts/priority_release_worker.py'",
+    "workers:up": "docker compose -f infra/docker-compose.yml --profile workers up -d outbox-worker priority-worker",
+    "workers:down": "docker compose -f infra/docker-compose.yml --profile workers stop outbox-worker priority-worker",
     "build:web": "pnpm --dir apps/web build",
     "lint:web": "pnpm --dir apps/web lint",
     "typecheck:web": "pnpm --dir apps/web typecheck"

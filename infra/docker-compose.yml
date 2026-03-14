@@ -16,5 +16,34 @@ services:
       timeout: 5s
       retries: 10
 
+  outbox-worker:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - ../apps/api/.env
+    command: ["uv", "run", "--no-sync", "python", "scripts/outbox_worker.py"]
+    restart: unless-stopped
+    profiles: ["workers"]
+    volumes:
+      - ../apps/api/src:/app/src:ro
+      - ../apps/api/scripts:/app/scripts:ro
+
+  priority-worker:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    env_file:
+      - ../apps/api/.env
+    command: ["uv", "run", "--no-sync", "python", "scripts/priority_release_worker.py"]
+    restart: unless-stopped
+    profiles: ["workers"]
+    volumes:
+      - ../apps/api/src:/app/src:ro
+      - ../apps/api/scripts:/app/scripts:ro
+
 volumes:
   rabbitmq_data:

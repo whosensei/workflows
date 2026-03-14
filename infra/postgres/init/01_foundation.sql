@@ -287,9 +287,80 @@ CREATE TABLE IF NOT EXISTS outbox_event (
     aggregate_id uuid NOT NULL,
     event_type text NOT NULL,
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    headers jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL DEFAULT 'pending',
     available_at timestamptz NOT NULL DEFAULT now(),
+    claimed_at timestamptz,
+    claimed_by text,
     published_at timestamptz,
     retry_count integer NOT NULL DEFAULT 0,
-    created_at timestamptz NOT NULL DEFAULT now()
+    max_attempts integer NOT NULL DEFAULT 20,
+    last_error text,
+    last_error_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE outbox_event
+    ALTER COLUMN payload SET DEFAULT '{}'::jsonb,
+    ALTER COLUMN status SET DEFAULT 'pending',
+    ALTER COLUMN available_at SET DEFAULT now(),
+    ALTER COLUMN retry_count SET DEFAULT 0;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS headers jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS claimed_at timestamptz;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS claimed_by text;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS max_attempts integer NOT NULL DEFAULT 20;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS last_error text;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS last_error_at timestamptz;
+
+ALTER TABLE outbox_event
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+ALTER TABLE outbox_event
+    DROP CONSTRAINT IF EXISTS outbox_event_status_check;
+
+ALTER TABLE outbox_event
+    ADD CONSTRAINT outbox_event_status_check
+    CHECK (status IN ('pending', 'processing', 'retry_scheduled', 'published', 'dead_letter'));
+
+CREATE INDEX IF NOT EXISTS idx_outbox_event_ready
+    ON outbox_event (available_at, created_at)
+    WHERE status IN ('pending', 'retry_scheduled');
+
+CREATE INDEX IF NOT EXISTS idx_outbox_event_processing
+    ON outbox_event (claimed_at)
+    WHERE status = 'processing';
+
+CREATE INDEX IF NOT EXISTS idx_outbox_event_aggregate
+    ON outbox_event (aggregate_type, aggregate_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS processed_message (
+    consumer_name text NOT NULL,
+    message_id uuid NOT NULL,
+    processed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (consumer_name, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed_message_processed_at
+    ON processed_message (processed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_human_task_priority_due
+    ON human_task (escalation_due_at, step_instance_id, sequence_no)
+    WHERE status = 'queued'
+      AND approval_mode_snapshot = 'priority_chain'
+      AND escalation_due_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_human_task_step_status
+    ON human_task (step_instance_id, status);

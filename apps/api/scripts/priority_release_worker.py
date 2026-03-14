@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from api.priority_release_worker import run_once
+from api.priority_release_worker import run_forever
 
 
 def main() -> None:
@@ -10,8 +10,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    released = run_once()
-    print(f"Released {released} queued priority-chain tasks.")
+    run_forever()
 
 
 if __name__ == "__main__":

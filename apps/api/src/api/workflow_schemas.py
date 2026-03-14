@@ -40,7 +40,7 @@ class WorkflowNotificationTemplateInput(BaseModel):
 
 
 class WorkflowStepMappingInput(BaseModel):
-    childWorkflowDefinitionId: UUID
+    childWorkflowDefinitionId: UUID | None = None
     childWorkflowVersionId: UUID | None = None
     triggerMode: TriggerMode = "sync_wait"
     inputMapping: dict = Field(default_factory=dict)

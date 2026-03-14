@@ -14,6 +14,15 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -26,6 +35,12 @@ import {
 } from "@/components/ui/table"
 import { authClient } from "@/lib/auth-client"
 import { publicEnv } from "@/lib/public-env"
+
+type UserOption = {
+  id: string
+  email: string
+  name: string
+}
 
 type ApprovalMode = "priority_chain" | "approve_any_one" | "approve_all" | "notify_all"
 type StepType = "start" | "end" | "human_task" | "system_task" | "subworkflow" | "decision"
@@ -410,6 +425,9 @@ function createEdges(transitions: BuilderTransition[]): Edge[] {
         fontSize: 12,
         fontWeight: 600,
       },
+      labelBgStyle: {
+        fill: "var(--background)",
+      },
     }))
 }
 
@@ -585,6 +603,9 @@ export function WorkflowBuilder() {
   const [isSaving, setIsSaving] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
   const [isLoadingDefinitions, setIsLoadingDefinitions] = useState(true)
+  const [users, setUsers] = useState<UserOption[]>([])
+  const [isImportOpen, setIsImportOpen] = useState(false)
+  const [importJson, setImportJson] = useState("")
 
   const graphNodes = useMemo(() => createNodes(steps), [steps])
   const graphEdges = useMemo(() => createEdges(transitions), [transitions])
@@ -627,9 +648,22 @@ export function WorkflowBuilder() {
     }
   }, [])
 
+  const loadUsers = useCallback(async () => {
+    try {
+      const response = await fetch("/api/users")
+      if (response.ok) {
+        const payload = (await response.json()) as { users: UserOption[] }
+        setUsers(payload.users)
+      }
+    } catch (err) {
+      console.error("Failed to load users", err)
+    }
+  }, [])
+
   useEffect(() => {
     void loadDefinitions()
-  }, [loadDefinitions])
+    void loadUsers()
+  }, [loadDefinitions, loadUsers])
 
   async function handleSave() {
     setIsSaving(true)
@@ -1065,6 +1099,48 @@ export function WorkflowBuilder() {
               >
                 Duplicate as new workflow
               </Button>
+              <Dialog open={isImportOpen} onOpenChange={setIsImportOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    Import JSON
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>Import Workflow JSON</DialogTitle>
+                    <DialogDescription>
+                      Paste the workflow JSON payload here to load it into the builder.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <textarea
+                    className="min-h-[300px] w-full rounded-xl border border-input bg-transparent px-3 py-2 text-sm font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    placeholder="{ ... }"
+                    value={importJson}
+                    onChange={(e) => setImportJson(e.target.value)}
+                  />
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setIsImportOpen(false)}>Cancel</Button>
+                    <Button onClick={() => {
+                      if (!importJson) return;
+                      try {
+                        const parsed = JSON.parse(importJson);
+                        const normalized = fromDetail(parsed.item || parsed);
+                        setKey(normalized.key);
+                        setName(normalized.name);
+                        setDescription(normalized.description);
+                        setSteps(normalized.steps);
+                        setTransitions(normalized.transitions);
+                        setSelectedDefinitionId(null);
+                        setStatus(`Imported '${normalized.name}' from JSON.`);
+                        setIsImportOpen(false);
+                        setImportJson("");
+                      } catch (err) {
+                        setError("Invalid JSON format.");
+                      }
+                    }}>Import</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
               <Badge variant="outline">
                 {selectedDefinitionId ? `Loaded: ${selectedDefinitionId}` : "New definition"}
               </Badge>
@@ -1265,14 +1341,20 @@ export function WorkflowBuilder() {
                   </div>
                   <div className="space-y-2">
                     <Label>Required approvals</Label>
-                    <Input
+                    <select
+                      className="flex h-9 w-full rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                       onChange={(event) =>
                         updateStepPolicy(stepIndex, {
                           requiredApprovalsCount: event.target.value,
                         })
                       }
                       value={step.assignmentPolicy.requiredApprovalsCount}
-                    />
+                    >
+                      <option value="">All assigned</option>
+                      {Array.from({ length: Math.max(1, step.associations.length) }, (_, i) => i + 1).map(num => (
+                        <option key={num} value={num.toString()}>{num}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="space-y-2">
                     <Label>Escalation timeout (s)</Label>
@@ -1488,33 +1570,68 @@ export function WorkflowBuilder() {
                           <option value="group">group</option>
                           <option value="sql_rule">sql_rule</option>
                         </select>
-                        <Input
-                          onChange={(event) =>
-                            updateAssociation(stepIndex, associationIndex, {
-                              associationValue: event.target.value,
-                            })
-                          }
-                          placeholder="manager@example.com"
-                          value={association.associationValue}
-                        />
-                        <Input
+                        {association.associationType === "user" ? (
+                          <select
+                            className="flex h-9 rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                            onChange={(event) =>
+                              updateAssociation(stepIndex, associationIndex, {
+                                associationValue: event.target.value,
+                              })
+                            }
+                            value={association.associationValue}
+                          >
+                            <option value="">Select a user...</option>
+                            {users.map((user) => (
+                              <option key={user.id} value={user.email}>
+                                {user.name} ({user.email})
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <Input
+                            onChange={(event) =>
+                              updateAssociation(stepIndex, associationIndex, {
+                                associationValue: event.target.value,
+                              })
+                            }
+                            placeholder={
+                              association.associationType === "role"
+                                ? "manager"
+                                : association.associationType === "group"
+                                  ? "engineering"
+                                  : "rule_name"
+                            }
+                            value={association.associationValue}
+                          />
+                        )}
+                        <select
+                          className="flex h-9 rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                           onChange={(event) =>
                             updateAssociation(stepIndex, associationIndex, {
                               priority: event.target.value,
                             })
                           }
-                          placeholder="priority"
-                          value={association.priority}
-                        />
-                        <Input
+                          value={association.priority || "1"}
+                        >
+                          <option value="">Priority</option>
+                          {Array.from({ length: 10 }, (_, i) => i + 1).map(num => (
+                            <option key={num} value={num.toString()}>{num}</option>
+                          ))}
+                        </select>
+                        <select
+                          className="flex h-9 rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                           onChange={(event) =>
                             updateAssociation(stepIndex, associationIndex, {
                               notificationOrder: event.target.value,
                             })
                           }
-                          placeholder="notify order"
-                          value={association.notificationOrder}
-                        />
+                          value={association.notificationOrder || "1"}
+                        >
+                          <option value="">Notify Order</option>
+                          {Array.from({ length: 10 }, (_, i) => i + 1).map(num => (
+                            <option key={num} value={num.toString()}>{num}</option>
+                          ))}
+                        </select>
                         <Input
                           onChange={(event) =>
                             updateAssociation(stepIndex, associationIndex, {

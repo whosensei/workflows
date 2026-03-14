@@ -39,6 +39,9 @@ export default async function OperationsPage() {
               <Link href="/builder">Open builder</Link>
             </Button>
             <Button asChild variant="outline">
+              <Link href="/project-implementation">Project docs</Link>
+            </Button>
+            <Button asChild variant="outline">
               <Link href="/dashboard">Back to dashboard</Link>
             </Button>
           </div>

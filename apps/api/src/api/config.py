@@ -16,6 +16,14 @@ class Settings(BaseSettings):
         "postgresql://USER:PASSWORD@YOUR_NEON_HOST/neondb?sslmode=require"
     )
     rabbitmq_url: str = "amqp://workflow:workflow@localhost:5672/"
+    outbox_exchange: str = "workflow.events"
+    outbox_batch_size: int = 100
+    outbox_poll_interval_seconds: float = 0.5
+    outbox_claim_ttl_seconds: int = 60
+    outbox_max_attempts_default: int = 20
+    priority_release_batch_size: int = 100
+    priority_release_poll_interval_seconds: float = 5.0
+    priority_release_advisory_lock_id: int = 54001
     better_auth_issuer: str = "http://localhost:3000"
     better_auth_audience: str = "http://localhost:3000"
     better_auth_jwks_url: str = "http://localhost:3000/api/auth/jwks"
