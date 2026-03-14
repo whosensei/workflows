@@ -91,6 +91,12 @@ class WorkflowDefinitionCreate(BaseModel):
     transitions: list[WorkflowTransitionInput]
 
 
+class WorkflowDefinitionCloneRequest(BaseModel):
+    key: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str | None = None
+
+
 class WorkflowAssociationResponse(WorkflowAssociationInput):
     id: UUID
 

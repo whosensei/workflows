@@ -363,6 +363,10 @@ function parseObjectText(value: string) {
   }
 }
 
+function cloneKey(baseKey: string) {
+  return `${baseKey}_copy_${Date.now().toString().slice(-6)}`
+}
+
 function resolveApiBaseUrl() {
   if (typeof window === "undefined") {
     return publicEnv.apiBaseUrl
@@ -777,6 +781,75 @@ export function WorkflowBuilder() {
     }
   }
 
+  async function cloneDefinition() {
+    if (!selectedDefinitionId) {
+      setError("Load a workflow definition before duplicating it.")
+      return
+    }
+
+    setIsBusy(true)
+    setError(null)
+    setStatus("Duplicating workflow into a new definition...")
+
+    try {
+      const token = await getToken()
+      const response = await fetch(
+        `${resolveApiBaseUrl()}/api/v1/workflow-definitions/${selectedDefinitionId}/clone`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            key: cloneKey(key),
+            name: `${name} Copy`,
+            description,
+          }),
+        },
+      )
+      const payload = (await response.json()) as
+        | { item?: WorkflowDefinitionDetail; detail?: string }
+        | WorkflowDefinitionDetail
+
+      if (!response.ok) {
+        throw new Error(
+          typeof payload === "object" && payload !== null && "detail" in payload
+            ? payload.detail || "Unable to duplicate workflow definition."
+            : "Unable to duplicate workflow definition.",
+        )
+      }
+
+      const definition =
+        typeof payload === "object" && payload !== null && "item" in payload
+          ? payload.item
+          : null
+
+      if (!definition) {
+        throw new Error("The API did not return the duplicated workflow definition.")
+      }
+
+      const normalized = fromDetail(definition)
+      setKey(normalized.key)
+      setName(normalized.name)
+      setDescription(normalized.description)
+      setSteps(normalized.steps)
+      setTransitions(normalized.transitions)
+      setSelectedDefinitionId(definition.id)
+      setStatus(`Duplicated '${name}' into new workflow '${definition.name}'.`)
+      await loadDefinitions()
+    } catch (cloneError) {
+      setError(
+        cloneError instanceof Error
+          ? cloneError.message
+          : "Unable to duplicate workflow definition.",
+      )
+      setStatus("Workflow duplication failed.")
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
   function addStep() {
     setSteps((current) => [
       ...current,
@@ -984,6 +1057,13 @@ export function WorkflowBuilder() {
                 variant="outline"
               >
                 Publish latest version
+              </Button>
+              <Button
+                disabled={!selectedDefinitionId || isBusy}
+                onClick={cloneDefinition}
+                variant="outline"
+              >
+                Duplicate as new workflow
               </Button>
               <Badge variant="outline">
                 {selectedDefinitionId ? `Loaded: ${selectedDefinitionId}` : "New definition"}

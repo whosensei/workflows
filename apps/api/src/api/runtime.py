@@ -1006,6 +1006,8 @@ def _load_instance_detail(workflow_instance_id) -> WorkflowInstanceDetail:
                     wd.id AS workflow_definition_id,
                     wd.key AS workflow_definition_key,
                     wd.name AS workflow_definition_name,
+                    wdv.graph_json,
+                    wdv.builder_layout,
                     sd.step_code AS current_step_code,
                     sd.step_label AS current_step_label,
                     wid.input_data,
@@ -1048,6 +1050,8 @@ def _load_instance_detail(workflow_instance_id) -> WorkflowInstanceDetail:
         inputData=_json(row["input_data"]),
         contextData=_json(row["context_data"]),
         outputData=_json(row["output_data"]),
+        graphJson=_json(row["graph_json"]),
+        builderLayout=_json(row["builder_layout"]),
         steps=steps,
         actions=actions,
     )

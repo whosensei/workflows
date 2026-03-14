@@ -9,6 +9,7 @@ from psycopg.types.json import Json
 from api.auth import AuthenticatedUser, get_current_user
 from api.db import get_db_connection
 from api.workflow_schemas import (
+    WorkflowDefinitionCloneRequest,
     WorkflowDefinitionCreate,
     WorkflowDefinitionCreateResponse,
     WorkflowDefinitionDetail,
@@ -421,6 +422,33 @@ def _load_workflow_detail(definition_id: str) -> WorkflowDefinitionDetail:
         steps=steps,
         transitions=transitions,
     )
+
+
+def _load_definition_create_payload(definition_id: str) -> WorkflowDefinitionCreate:
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT v.definition_snapshot
+                FROM workflow_definition d
+                JOIN LATERAL (
+                    SELECT *
+                    FROM workflow_definition_version v
+                    WHERE v.workflow_definition_id = d.id
+                    ORDER BY version_no DESC
+                    LIMIT 1
+                ) v ON TRUE
+                WHERE d.id = %s
+                """,
+                (definition_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Workflow definition not found.",
+                )
+    return WorkflowDefinitionCreate.model_validate(row["definition_snapshot"])
 
 
 def _insert_workflow_version(cursor, definition_id, payload: WorkflowDefinitionCreate, user: AuthenticatedUser):
@@ -836,3 +864,43 @@ def publish_workflow_definition(
         connection.commit()
 
     return WorkflowDefinitionCreateResponse(item=_load_workflow_detail(definition_id))
+
+
+@router.post("/{definition_id}/clone", response_model=WorkflowDefinitionCreateResponse, status_code=status.HTTP_201_CREATED)
+def clone_workflow_definition(
+    definition_id: str,
+    payload: WorkflowDefinitionCloneRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> WorkflowDefinitionCreateResponse:
+    clone_payload = _load_definition_create_payload(definition_id)
+    clone_payload.key = payload.key
+    clone_payload.name = payload.name
+    if payload.description is not None:
+        clone_payload.description = payload.description
+
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO workflow_definition (key, name, description, status, created_by)
+                    VALUES (%s, %s, %s, 'draft', %s)
+                    RETURNING id
+                    """,
+                    (
+                        clone_payload.key,
+                        clone_payload.name,
+                        clone_payload.description,
+                        user.user_id,
+                    ),
+                )
+                new_definition_id = cursor.fetchone()["id"]
+                _insert_workflow_version(cursor, new_definition_id, clone_payload, user)
+            connection.commit()
+    except UniqueViolation as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workflow key already exists.",
+        ) from error
+
+    return WorkflowDefinitionCreateResponse(item=_load_workflow_detail(str(new_definition_id)))

@@ -108,6 +108,8 @@ class WorkflowInstanceDetail(WorkflowInstanceSummary):
     inputData: dict[str, Any]
     contextData: dict[str, Any]
     outputData: dict[str, Any]
+    graphJson: dict[str, Any]
+    builderLayout: dict[str, Any]
     steps: list[dict[str, Any]]
     actions: list[WorkflowActionResponse]
 
