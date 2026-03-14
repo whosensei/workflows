@@ -49,6 +49,9 @@ class WorkflowActionResponse(BaseModel):
     id: UUID
     actionType: str
     actionCode: str | None = None
+    stepInstanceId: UUID | None = None
+    stepCode: str | None = None
+    stepLabel: str | None = None
     actorUserId: str | None = None
     actorType: str
     remarkText: str | None = None

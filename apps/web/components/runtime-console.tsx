@@ -1,6 +1,7 @@
 "use client"
 
 import type { Edge, Node } from "@xyflow/react"
+import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
@@ -52,6 +53,9 @@ type WorkflowAction = {
   id: string
   actionType: string
   actionCode: string | null
+  stepInstanceId: string | null
+  stepCode: string | null
+  stepLabel: string | null
   actorUserId: string | null
   actorType: string
   remarkText: string | null
@@ -156,24 +160,27 @@ export function RuntimeConsole() {
   const [error, setError] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
 
+  const pendingTasks = useMemo(() => tasks.filter((task) => task.status === "open"), [tasks])
+  const otherTasks = useMemo(() => tasks.filter((task) => task.status !== "open"), [tasks])
+
   const summary = useMemo(
     () => ({
       definitions: definitions.length,
       running: instances.filter((instance) => ["running", "waiting", "paused"].includes(instance.status))
         .length,
-      openTasks: tasks.filter((task) => task.status === "open").length,
+      openTasks: pendingTasks.length,
       unreadNotifications: notifications.filter((notification) => !notification.isRead).length,
     }),
-    [definitions, instances, notifications, tasks],
+    [definitions, instances, notifications, pendingTasks],
   )
 
-  async function getToken() {
+  const getToken = useCallback(async () => {
     const tokenResponse = await authClient.token()
     if (tokenResponse.error || !tokenResponse.data?.token) {
       throw new Error(tokenResponse.error?.message ?? "No Better Auth token available.")
     }
     return tokenResponse.data.token
-  }
+  }, [])
 
   const authedFetch = useCallback(async (path: string, init?: RequestInit) => {
     const token = await getToken()
@@ -332,7 +339,7 @@ export function RuntimeConsole() {
         `Task action ${actionType} recorded. Workflow is now ${payload.workflowStatus ?? "updated"}.`,
       )
       setTaskRemarks((current) => ({ ...current, [task.id]: "" }))
-      await Promise.all([refreshAll(), loadInstanceDetail(task.workflowInstanceId)])
+      await refreshAll()
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Unable to action task.")
       setStatus("Task action failed.")
@@ -365,6 +372,7 @@ export function RuntimeConsole() {
       setIsBusy(false)
     }
   }
+
 
   return (
     <div className="space-y-6">
@@ -476,10 +484,12 @@ export function RuntimeConsole() {
               <CardTitle>Human task inbox</CardTitle>
               <CardDescription>
                 Approve, reject, or revert tasks with remarks and watch the workflow advance.
+                Pending requests stay at the top. Other requests are available below in a collapsible
+                section.
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              {tasks.length > 0 ? (
+            <CardContent className="space-y-4">
+              {pendingTasks.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -491,7 +501,7 @@ export function RuntimeConsole() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {tasks.map((task) => (
+                    {pendingTasks.map((task) => (
                       <TableRow key={task.id}>
                         <TableCell>
                           <div>
@@ -500,9 +510,7 @@ export function RuntimeConsole() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={task.status === "open" ? "secondary" : "outline"}>
-                            {task.status}
-                          </Badge>
+                          <Badge variant="secondary">{task.status}</Badge>
                         </TableCell>
                         <TableCell>{task.approvalModeSnapshot}</TableCell>
                         <TableCell className="min-w-64">
@@ -555,8 +563,51 @@ export function RuntimeConsole() {
                   </TableBody>
                 </Table>
               ) : (
-                <p className="text-sm text-muted-foreground">No tasks are currently assigned.</p>
+                <p className="text-sm text-muted-foreground">
+                  No pending requests are currently assigned.
+                </p>
               )}
+
+              {otherTasks.length > 0 ? (
+                <details className="rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium">
+                    <span>Other requests</span>
+                    <Badge variant="outline">{otherTasks.length}</Badge>
+                  </summary>
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Completed, queued, expired, and cancelled requests are kept here for reference.
+                  </p>
+                  <div className="mt-4">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Step</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Mode</TableHead>
+                          <TableHead>Created</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {otherTasks.map((task) => (
+                          <TableRow key={task.id}>
+                            <TableCell>
+                              <div>
+                                <p className="font-medium">{task.stepLabel}</p>
+                                <p className="text-xs text-muted-foreground">{task.stepCode}</p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{task.status}</Badge>
+                            </TableCell>
+                            <TableCell>{task.approvalModeSnapshot}</TableCell>
+                            <TableCell>{formatDate(task.createdAt)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </details>
+              ) : null}
             </CardContent>
           </Card>
         </TabsContent>
@@ -598,12 +649,14 @@ export function RuntimeConsole() {
                         <TableCell>{instance.currentStepLabel ?? "-"}</TableCell>
                         <TableCell>{formatDate(instance.startedAt)}</TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            onClick={() => void loadInstanceDetail(instance.id)}
-                            size="sm"
-                            variant="outline"
-                          >
-                            Inspect
+                          <Button asChild size="sm" variant="outline">
+                            <Link
+                              href={`/operations/instances/${instance.id}`}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              Inspect
+                            </Link>
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -739,6 +792,7 @@ export function RuntimeConsole() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Action</TableHead>
+                          <TableHead>Step</TableHead>
                           <TableHead>Actor</TableHead>
                           <TableHead>Remark</TableHead>
                           <TableHead>Time</TableHead>
@@ -748,6 +802,18 @@ export function RuntimeConsole() {
                         {selectedInstance.actions.map((action) => (
                           <TableRow key={action.id}>
                             <TableCell>{action.actionType}</TableCell>
+                            <TableCell>
+                              {action.stepLabel ? (
+                                <div>
+                                  <p className="font-medium">{action.stepLabel}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {action.stepCode ?? "-"}
+                                  </p>
+                                </div>
+                              ) : (
+                                "-"
+                              )}
+                            </TableCell>
                             <TableCell>{action.actorUserId ?? action.actorType}</TableCell>
                             <TableCell>{action.remarkText ?? "-"}</TableCell>
                             <TableCell>{formatDate(action.createdAt)}</TableCell>

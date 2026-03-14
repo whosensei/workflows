@@ -734,9 +734,11 @@ def _resume_parent_from_child(cursor, child_workflow_instance, child_result_acti
 
     cursor.execute(
         """
-        SELECT *
-        FROM workflow_instance
-        WHERE id = %s
+        SELECT wi.*, wd.name AS workflow_definition_name
+        FROM workflow_instance wi
+        JOIN workflow_definition_version wdv ON wdv.id = wi.workflow_version_id
+        JOIN workflow_definition wd ON wd.id = wdv.workflow_definition_id
+        WHERE wi.id = %s
         """,
         (child_workflow_instance["parent_workflow_instance_id"],),
     )
@@ -973,10 +975,15 @@ def _load_step_instances(cursor, workflow_instance_id):
 def _load_actions(cursor, workflow_instance_id):
     cursor.execute(
         """
-        SELECT *
-        FROM workflow_action
-        WHERE workflow_instance_id = %s
-        ORDER BY created_at
+        SELECT
+            wa.*,
+            sd.step_code,
+            sd.step_label
+        FROM workflow_action wa
+        LEFT JOIN step_instance si ON si.id = wa.step_instance_id
+        LEFT JOIN workflow_step_definition sd ON sd.id = si.step_definition_id
+        WHERE wa.workflow_instance_id = %s
+        ORDER BY wa.created_at
         """,
         (workflow_instance_id,),
     )
@@ -986,6 +993,9 @@ def _load_actions(cursor, workflow_instance_id):
             "id": row["id"],
             "actionType": row["action_type"],
             "actionCode": row["action_code"],
+            "stepInstanceId": row["step_instance_id"],
+            "stepCode": row["step_code"],
+            "stepLabel": row["step_label"],
             "actorUserId": row["actor_user_id"],
             "actorType": row["actor_type"],
             "remarkText": row["remark_text"],
@@ -1313,26 +1323,107 @@ def _apply_task_action(
     )
 
     advance = True
-    if action_type == "approve" and task_row["approval_mode_snapshot"] == "approve_all":
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS remaining
-            FROM human_task
-            WHERE step_instance_id = %s AND status IN ('open', 'queued', 'claimed') AND id <> %s
-            """,
-            (task_row["step_instance_id"], task_row["id"]),
-        )
-        remaining = cursor.fetchone()["remaining"]
-        if remaining > 0:
-            advance = False
+    approval_mode = task_row["approval_mode_snapshot"]
+
+    if approval_mode == "approve_all":
+        if action_type == "approve":
             cursor.execute(
                 """
-                UPDATE step_instance
-                SET result_action = 'approve'
-                WHERE id = %s
+                SELECT COUNT(*) AS remaining
+                FROM human_task
+                WHERE step_instance_id = %s AND status IN ('open', 'queued', 'claimed') AND id <> %s
                 """,
-                (task_row["step_instance_id"],),
+                (task_row["step_instance_id"], task_row["id"]),
             )
+            remaining = cursor.fetchone()["remaining"]
+            if remaining > 0:
+                advance = False
+                cursor.execute(
+                    """
+                    UPDATE step_instance
+                    SET result_action = 'approve'
+                    WHERE id = %s
+                    """,
+                    (task_row["step_instance_id"],),
+                )
+
+    elif approval_mode == "approve_any_one":
+        if action_type == "reject":
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS remaining
+                FROM human_task
+                WHERE step_instance_id = %s AND status IN ('open', 'queued', 'claimed') AND id <> %s
+                """,
+                (task_row["step_instance_id"], task_row["id"]),
+            )
+            remaining = cursor.fetchone()["remaining"]
+            if remaining > 0:
+                advance = False
+
+    elif approval_mode == "priority_chain":
+        if action_type == "reject":
+            cursor.execute(
+                """
+                SELECT * FROM human_task
+                WHERE step_instance_id = %s AND status = 'queued' AND sequence_no > %s
+                ORDER BY sequence_no ASC LIMIT 1
+                """,
+                (task_row["step_instance_id"], task_row["sequence_no"]),
+            )
+            next_task = cursor.fetchone()
+            if next_task:
+                advance = False
+                cursor.execute(
+                    "UPDATE human_task SET status = 'open' WHERE id = %s",
+                    (next_task["id"],),
+                )
+                if next_task["assigned_user_id"]:
+                    cursor.execute('SELECT email FROM "user" WHERE id = %s', (next_task["assigned_user_id"],))
+                    assignee_row = cursor.fetchone()
+                    
+                    cursor.execute(
+                        """
+                        SELECT * FROM notification_template 
+                        WHERE workflow_version_id = %s AND step_definition_id = %s AND event_type = 'task_created'
+                        """, 
+                        (task_row["workflow_version_id"], task_row["step_definition_id"])
+                    )
+                    notification_template = cursor.fetchone()
+                    
+                    notification_title, notification_body = _render_notification_template(
+                        notification_template["title_template"] if notification_template else None,
+                        notification_template["body_template"] if notification_template else None,
+                        {
+                            "workflowName": task_row["workflow_definition_name"],
+                            "stepLabel": task_row["step_label"],
+                            "stepCode": task_row["step_code"],
+                            "actorEmail": assignee_row["email"] if assignee_row else "",
+                        },
+                        fallback_title=f"Action required: {task_row['step_label']}",
+                        fallback_body=f"The workflow '{task_row['workflow_definition_name']}' is waiting for your action.",
+                    )
+                    _create_notification(
+                        cursor,
+                        next_task["assigned_user_id"],
+                        task_row["workflow_instance_id"],
+                        task_row["step_instance_id"],
+                        "task_assigned",
+                        notification_title,
+                        notification_body,
+                    )
+                    _record_outbox(
+                        cursor,
+                        "human_task",
+                        next_task["id"],
+                        "human_task.assigned",
+                        {
+                            "workflowInstanceId": str(task_row["workflow_instance_id"]),
+                            "stepInstanceId": str(task_row["step_instance_id"]),
+                            "stepCode": task_row["step_code"],
+                            "assignedUserId": next_task["assigned_user_id"],
+                        },
+                    )
 
     if not advance:
         return WorkflowTaskActionResponse(
