@@ -121,6 +121,8 @@ def _validate_workflow(payload: WorkflowDefinitionCreate) -> tuple[dict, dict]:
         outgoing[transition.fromStepCode].append(transition)
 
     for step in payload.steps:
+        if step.stepType == "subworkflow" and step.subworkflowMapping is None:
+            errors.append(f"Subworkflow step '{step.stepCode}' requires a subworkflow mapping.")
         if step.stepType == "end" or step.isTerminal:
             continue
         if not outgoing.get(step.stepCode):
@@ -282,6 +284,36 @@ def _load_workflow_detail(definition_id: str) -> WorkflowDefinitionDetail:
                     }
                 )
 
+            if step_ids:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM workflow_step_mapping
+                    WHERE step_definition_id = ANY(%s)
+                    """,
+                    (step_ids,),
+                )
+                mapping_rows = cursor.fetchall()
+            else:
+                mapping_rows = []
+            mapping_by_step = {row["step_definition_id"]: row for row in mapping_rows}
+
+            if step_ids:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM notification_template
+                    WHERE workflow_version_id = %s
+                      AND event_type = 'task_created'
+                      AND step_definition_id = ANY(%s)
+                    """,
+                    (version_id, step_ids),
+                )
+                notification_rows = cursor.fetchall()
+            else:
+                notification_rows = []
+            notification_by_step = {row["step_definition_id"]: row for row in notification_rows}
+
             step_code_by_id = {row["id"]: row["step_code"] for row in step_rows}
 
             cursor.execute(
@@ -298,6 +330,8 @@ def _load_workflow_detail(definition_id: str) -> WorkflowDefinitionDetail:
     steps = []
     for row in step_rows:
         policy = policy_by_step.get(row["id"])
+        mapping = mapping_by_step.get(row["id"])
+        notification = notification_by_step.get(row["id"])
         steps.append(
             {
                 "id": row["id"],
@@ -314,6 +348,30 @@ def _load_workflow_detail(definition_id: str) -> WorkflowDefinitionDetail:
                 "formSchema": row["form_schema"] or {},
                 "config": row["config"] or {},
                 "isTerminal": row["is_terminal"],
+                "notificationTemplate": (
+                    {
+                        "id": notification["id"],
+                        "titleTemplate": notification["title_template"],
+                        "bodyTemplate": notification["body_template"],
+                        "allowActorOverride": notification["allow_actor_override"],
+                    }
+                    if notification
+                    else None
+                ),
+                "subworkflowMapping": (
+                    {
+                        "id": mapping["id"],
+                        "childWorkflowDefinitionId": mapping["child_workflow_definition_id"],
+                        "childWorkflowVersionId": mapping["child_workflow_version_id"],
+                        "triggerMode": mapping["trigger_mode"],
+                        "inputMapping": mapping["input_mapping"] or {},
+                        "outputMapping": mapping["output_mapping"] or {},
+                        "completionAction": mapping["completion_action"],
+                        "failureAction": mapping["failure_action"],
+                    }
+                    if mapping
+                    else None
+                ),
                 "assignmentPolicy": (
                     {
                         "id": policy["id"],
@@ -537,6 +595,68 @@ def create_workflow_definition(
                             policy.maxEscalationCount,
                         ),
                     )
+
+                    if step.notificationTemplate and (
+                        step.notificationTemplate.titleTemplate
+                        or step.notificationTemplate.bodyTemplate
+                    ):
+                        cursor.execute(
+                            """
+                            INSERT INTO notification_template (
+                                workflow_version_id,
+                                step_definition_id,
+                                event_type,
+                                channel,
+                                title_template,
+                                body_template,
+                                allow_actor_override,
+                                supported_variables
+                            )
+                            VALUES (%s, %s, 'task_created', 'in_app', %s, %s, %s, %s)
+                            """,
+                            (
+                                version_id,
+                                step_id,
+                                step.notificationTemplate.titleTemplate,
+                                step.notificationTemplate.bodyTemplate,
+                                step.notificationTemplate.allowActorOverride,
+                                Json(
+                                    [
+                                        "workflowName",
+                                        "stepLabel",
+                                        "stepCode",
+                                        "actorEmail",
+                                    ]
+                                ),
+                            ),
+                        )
+
+                    if step.subworkflowMapping:
+                        cursor.execute(
+                            """
+                            INSERT INTO workflow_step_mapping (
+                                step_definition_id,
+                                child_workflow_definition_id,
+                                child_workflow_version_id,
+                                trigger_mode,
+                                input_mapping,
+                                output_mapping,
+                                completion_action,
+                                failure_action
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                step_id,
+                                step.subworkflowMapping.childWorkflowDefinitionId,
+                                step.subworkflowMapping.childWorkflowVersionId,
+                                step.subworkflowMapping.triggerMode,
+                                Json(step.subworkflowMapping.inputMapping),
+                                Json(step.subworkflowMapping.outputMapping),
+                                step.subworkflowMapping.completionAction,
+                                step.subworkflowMapping.failureAction,
+                            ),
+                        )
 
                     for association in step.associations:
                         cursor.execute(

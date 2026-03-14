@@ -119,6 +119,23 @@ def _create_notification(
     )
 
 
+def _render_notification_template(
+    title_template: str | None,
+    body_template: str | None,
+    context: dict[str, Any],
+    fallback_title: str,
+    fallback_body: str,
+) -> tuple[str, str]:
+    title = title_template or fallback_title
+    body = body_template or fallback_body
+
+    for key, value in context.items():
+        title = title.replace(f"{{{key}}}", str(value))
+        body = body.replace(f"{{{key}}}", str(value))
+
+    return title, body
+
+
 def _resolve_version(cursor, workflow_definition_id=None, workflow_key=None):
     if workflow_definition_id is not None:
         cursor.execute(
@@ -190,6 +207,33 @@ def _get_step_by_id(cursor, step_definition_id):
         WHERE id = %s
         """,
         (step_definition_id,),
+    )
+    return cursor.fetchone()
+
+
+def _get_mapping(cursor, step_definition_id):
+    cursor.execute(
+        """
+        SELECT *
+        FROM workflow_step_mapping
+        WHERE step_definition_id = %s
+        """,
+        (step_definition_id,),
+    )
+    return cursor.fetchone()
+
+
+def _get_notification_template(cursor, workflow_version_id, step_definition_id, event_type="task_created"):
+    cursor.execute(
+        """
+        SELECT *
+        FROM notification_template
+        WHERE workflow_version_id = %s
+          AND step_definition_id = %s
+          AND event_type = %s
+        LIMIT 1
+        """,
+        (workflow_version_id, step_definition_id, event_type),
     )
     return cursor.fetchone()
 
@@ -339,6 +383,12 @@ def _create_human_tasks(cursor, workflow_instance, step_instance, step_definitio
     )
     approval_mode = policy["approval_mode"] if policy else "priority_chain"
     reminder_seconds = policy["reminder_interval_seconds"] if policy else None
+    notification_template = _get_notification_template(
+        cursor,
+        workflow_instance["workflow_version_id"],
+        step_definition["id"],
+        "task_created",
+    )
 
     active_user_ids = []
     now = _now()
@@ -404,14 +454,34 @@ def _create_human_tasks(cursor, workflow_instance, step_instance, step_definitio
 
         if task_status == "open" and task_row["assigned_user_id"]:
             active_user_ids.append(task_row["assigned_user_id"])
+            cursor.execute(
+                'SELECT email FROM "user" WHERE id = %s',
+                (task_row["assigned_user_id"],),
+            )
+            assignee_row = cursor.fetchone()
+            notification_title, notification_body = _render_notification_template(
+                notification_template["title_template"] if notification_template else None,
+                notification_template["body_template"] if notification_template else None,
+                {
+                    "workflowName": workflow_instance["workflow_definition_name"],
+                    "stepLabel": step_definition["step_label"],
+                    "stepCode": step_definition["step_code"],
+                    "actorEmail": assignee_row["email"] if assignee_row else "",
+                },
+                fallback_title=f"Action required: {step_definition['step_label']}",
+                fallback_body=(
+                    f"The workflow '{workflow_instance['workflow_definition_name']}' is waiting "
+                    "for your action."
+                ),
+            )
             _create_notification(
                 cursor,
                 task_row["assigned_user_id"],
                 workflow_instance["id"],
                 step_instance["id"],
                 "task_assigned",
-                f"Action required: {step_definition['step_label']}",
-                f"The workflow '{workflow_instance['workflow_definition_name']}' is waiting for your action.",
+                notification_title,
+                notification_body,
             )
             _record_outbox(
                 cursor,
@@ -461,6 +531,14 @@ def _complete_workflow(cursor, workflow_instance, step_instance, result_action: 
     new_status = "completed" if result_action == "approve" else "rejected"
     cursor.execute(
         """
+        UPDATE workflow_instance_data
+        SET output_data = context_data, updated_at = now()
+        WHERE workflow_instance_id = %s
+        """,
+        (workflow_instance["id"],),
+    )
+    cursor.execute(
+        """
         UPDATE step_instance
         SET status = %s, completed_at = now(), result_action = %s
         WHERE id = %s
@@ -487,6 +565,11 @@ def _complete_workflow(cursor, workflow_instance, step_instance, result_action: 
         reason="terminal step reached",
     )
 
+    if workflow_instance.get("parent_workflow_instance_id") and workflow_instance.get(
+        "parent_step_instance_id"
+    ):
+        _resume_parent_from_child(cursor, workflow_instance, result_action)
+
 
 def _cancel_other_tasks(cursor, step_instance_id, except_task_id):
     cursor.execute(
@@ -507,6 +590,248 @@ def _transition_for_action(cursor, workflow_version_id, from_step_definition_id,
                 return transition
         return None
     return transitions[0] if transitions else None
+
+
+def _resolve_mapping_value(path: str, source: dict[str, Any]):
+    if path.startswith("$."):
+        path = path[2:]
+    current: Any = source
+    for part in path.split("."):
+        if not part:
+            continue
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _apply_output_mapping(output_mapping: dict[str, Any], payload: dict[str, Any], current_context: dict[str, Any]):
+    updated = dict(current_context)
+    for destination, source_path in (output_mapping or {}).items():
+        value = (
+            _resolve_mapping_value(source_path, payload)
+            if isinstance(source_path, str)
+            else source_path
+        )
+        updated[destination] = value
+    return updated
+
+
+def _start_child_workflow_instance(cursor, parent_workflow_instance, parent_step_instance, mapping):
+    child_version = _resolve_version(
+        cursor,
+        workflow_definition_id=mapping["child_workflow_definition_id"],
+    )
+    business_key = (
+        f"{parent_workflow_instance['id']}::{parent_step_instance['id']}::child"
+    )
+    cursor.execute(
+        """
+        INSERT INTO workflow_instance (
+            workflow_version_id,
+            business_key,
+            run_number,
+            status,
+            started_by,
+            parent_workflow_instance_id,
+            parent_step_instance_id
+        )
+        VALUES (%s, %s, 1, 'running', %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            child_version["id"],
+            business_key,
+            parent_workflow_instance.get("started_by"),
+            parent_workflow_instance["id"],
+            parent_step_instance["id"],
+        ),
+    )
+    child_workflow_instance = cursor.fetchone()
+    child_workflow_instance["workflow_definition_name"] = child_version["name"]
+
+    cursor.execute(
+        """
+        SELECT context_data
+        FROM workflow_instance_data
+        WHERE workflow_instance_id = %s
+        """,
+        (parent_workflow_instance["id"],),
+    )
+    parent_data = cursor.fetchone()
+    parent_context = parent_data["context_data"] if parent_data else {}
+    child_input = {}
+    for destination, source_path in (mapping["input_mapping"] or {}).items():
+        if isinstance(source_path, str):
+            child_input[destination] = _resolve_mapping_value(source_path, parent_context or {})
+        else:
+            child_input[destination] = source_path
+
+    cursor.execute(
+        """
+        INSERT INTO workflow_instance_data (
+            workflow_instance_id,
+            input_data,
+            context_data,
+            output_data
+        )
+        VALUES (%s, %s, %s, '{}'::jsonb)
+        """,
+        (
+            child_workflow_instance["id"],
+            Json(child_input),
+            Json(child_input),
+        ),
+    )
+    cursor.execute(
+        """
+        INSERT INTO subworkflow_link (
+            parent_workflow_instance_id,
+            parent_step_instance_id,
+            child_workflow_instance_id,
+            link_status
+        )
+        VALUES (%s, %s, %s, 'running')
+        """,
+        (
+            parent_workflow_instance["id"],
+            parent_step_instance["id"],
+            child_workflow_instance["id"],
+        ),
+    )
+
+    start_step = _get_start_step(cursor, child_version["id"])
+    _enter_step(cursor, child_workflow_instance, start_step, "approve")
+
+
+def _resume_parent_from_child(cursor, child_workflow_instance, child_result_action: str):
+    cursor.execute(
+        """
+        SELECT output_data, context_data
+        FROM workflow_instance_data
+        WHERE workflow_instance_id = %s
+        """,
+        (child_workflow_instance["id"],),
+    )
+    child_data = cursor.fetchone()
+    output_payload = (
+        (child_data["output_data"] if child_data and child_data["output_data"] else None)
+        or (child_data["context_data"] if child_data and child_data["context_data"] else None)
+        or {}
+    )
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM step_instance
+        WHERE id = %s
+        """,
+        (child_workflow_instance["parent_step_instance_id"],),
+    )
+    parent_step_instance = cursor.fetchone()
+    if parent_step_instance is None:
+        return
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM workflow_instance
+        WHERE id = %s
+        """,
+        (child_workflow_instance["parent_workflow_instance_id"],),
+    )
+    parent_workflow_instance = cursor.fetchone()
+    if parent_workflow_instance is None:
+        return
+
+    parent_step_definition = _get_step_by_id(cursor, parent_step_instance["step_definition_id"])
+    mapping = _get_mapping(cursor, parent_step_definition["id"])
+    if mapping is None:
+        return
+
+    cursor.execute(
+        """
+        UPDATE subworkflow_link
+        SET link_status = %s, resume_action = %s, completed_at = now()
+        WHERE child_workflow_instance_id = %s
+        """,
+        (
+            "completed" if child_result_action == "approve" else "failed",
+            mapping["completion_action"] if child_result_action == "approve" else mapping["failure_action"],
+            child_workflow_instance["id"],
+        ),
+    )
+
+    cursor.execute(
+        """
+        SELECT context_data
+        FROM workflow_instance_data
+        WHERE workflow_instance_id = %s
+        """,
+        (parent_workflow_instance["id"],),
+    )
+    parent_data = cursor.fetchone()
+    parent_context = parent_data["context_data"] if parent_data else {}
+    updated_context = _apply_output_mapping(
+        mapping["output_mapping"] or {},
+        output_payload,
+        parent_context or {},
+    )
+    cursor.execute(
+        """
+        UPDATE workflow_instance_data
+        SET context_data = %s, updated_at = now()
+        WHERE workflow_instance_id = %s
+        """,
+        (Json(updated_context), parent_workflow_instance["id"]),
+    )
+
+    cursor.execute(
+        """
+        UPDATE step_instance
+        SET status = %s, completed_at = now(), result_action = %s, result_payload = %s
+        WHERE id = %s
+        """,
+        (
+            "completed" if child_result_action == "approve" else "failed",
+            mapping["completion_action"] if child_result_action == "approve" else mapping["failure_action"],
+            Json(output_payload),
+            parent_step_instance["id"],
+        ),
+    )
+
+    action_to_apply = (
+        mapping["completion_action"] if child_result_action == "approve" else mapping["failure_action"]
+    )
+    transition = _transition_for_action(
+        cursor,
+        parent_workflow_instance["workflow_version_id"],
+        parent_step_definition["id"],
+        action_to_apply,
+        None,
+    )
+    if transition is None or transition["to_step_definition_id"] is None:
+        _complete_workflow(cursor, parent_workflow_instance, parent_step_instance, action_to_apply)
+        return
+
+    cursor.execute(
+        """
+        UPDATE workflow_instance
+        SET status = 'running', updated_at = now()
+        WHERE id = %s
+        """,
+        (parent_workflow_instance["id"],),
+    )
+    _record_status_history(
+        cursor,
+        parent_workflow_instance["id"],
+        "paused",
+        "running",
+        reason="subworkflow completed",
+    )
+
+    next_step = _get_step_by_id(cursor, transition["to_step_definition_id"])
+    _enter_step(cursor, parent_workflow_instance, next_step, action_to_apply)
 
 
 def _enter_step(cursor, workflow_instance, step_definition, trigger_action: str = "approve"):
@@ -545,6 +870,43 @@ def _enter_step(cursor, workflow_instance, step_definition, trigger_action: str 
 
     if step_definition["step_type"] == "human_task":
         _create_human_tasks(cursor, workflow_instance, step_instance, step_definition)
+        return {
+            "step_instance_id": step_instance["id"],
+            "next_step_code": step_definition["step_code"],
+        }
+
+    if step_definition["step_type"] == "subworkflow":
+        mapping = _get_mapping(cursor, step_definition["id"])
+        if mapping is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Subworkflow step '{step_definition['step_code']}' has no mapping.",
+            )
+
+        cursor.execute(
+            """
+            UPDATE workflow_instance
+            SET status = 'paused', current_step_instance_id = %s, updated_at = now()
+            WHERE id = %s
+            """,
+            (step_instance["id"], workflow_instance["id"]),
+        )
+        _record_status_history(
+            cursor,
+            workflow_instance["id"],
+            workflow_instance["status"],
+            "paused",
+            reason="waiting on subworkflow",
+        )
+        cursor.execute(
+            """
+            UPDATE step_instance
+            SET status = 'waiting', waiting_since = now()
+            WHERE id = %s
+            """,
+            (step_instance["id"],),
+        )
+        _start_child_workflow_instance(cursor, workflow_instance, step_instance, mapping)
         return {
             "step_instance_id": step_instance["id"],
             "next_step_code": step_definition["step_code"],
