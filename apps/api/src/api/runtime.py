@@ -1386,12 +1386,16 @@ def _apply_task_action(
         )
     else:
         next_step = _get_step_by_id(cursor, transition["to_step_definition_id"])
-        workflow_instance = {
-            "id": task_row["workflow_instance_id"],
-            "workflow_version_id": task_row["workflow_version_id"],
-            "status": task_row["workflow_status"],
-            "workflow_definition_name": task_row["workflow_definition_name"],
-        }
+        cursor.execute(
+            """
+            SELECT *
+            FROM workflow_instance
+            WHERE id = %s
+            """,
+            (task_row["workflow_instance_id"],),
+        )
+        workflow_instance = cursor.fetchone()
+        workflow_instance["workflow_definition_name"] = task_row["workflow_definition_name"]
         entry = _enter_step(cursor, workflow_instance, next_step, action_type)
         next_step_code = entry["next_step_code"]
         cursor.execute(
