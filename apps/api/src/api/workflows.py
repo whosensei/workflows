@@ -423,6 +423,237 @@ def _load_workflow_detail(definition_id: str) -> WorkflowDefinitionDetail:
     )
 
 
+def _insert_workflow_version(cursor, definition_id, payload: WorkflowDefinitionCreate, user: AuthenticatedUser):
+    cursor.execute(
+        """
+        SELECT COALESCE(MAX(version_no), 0) AS max_version_no
+        FROM workflow_definition_version
+        WHERE workflow_definition_id = %s
+        """,
+        (definition_id,),
+    )
+    next_version_no = cursor.fetchone()["max_version_no"] + 1
+
+    graph_json, builder_layout = _validate_workflow(payload)
+
+    cursor.execute(
+        """
+        INSERT INTO workflow_definition_version (
+            workflow_definition_id,
+            version_no,
+            is_published,
+            version_label,
+            definition_snapshot,
+            graph_json,
+            builder_layout,
+            created_by
+        )
+        VALUES (%s, %s, false, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            definition_id,
+            next_version_no,
+            f"v{next_version_no}",
+            Json(payload.model_dump(mode="json")),
+            Json(graph_json),
+            Json(builder_layout),
+            user.user_id,
+        ),
+    )
+    version_id = cursor.fetchone()["id"]
+
+    step_id_by_code: dict[str, str] = {}
+    for step in payload.steps:
+        cursor.execute(
+            """
+            INSERT INTO workflow_step_definition (
+                workflow_version_id,
+                step_code,
+                step_label,
+                description,
+                step_type,
+                sequence_hint,
+                allow_revert,
+                remark_required_on_approve,
+                remark_required_on_reject,
+                remark_required_on_revert,
+                max_visits_per_instance,
+                form_schema,
+                config,
+                is_terminal
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                version_id,
+                step.stepCode,
+                step.stepLabel,
+                step.description,
+                step.stepType,
+                step.sequenceHint,
+                step.allowRevert,
+                step.remarkRequiredOnApprove,
+                step.remarkRequiredOnReject,
+                step.remarkRequiredOnRevert,
+                step.maxVisitsPerInstance,
+                Json(step.formSchema),
+                Json(step.config),
+                step.isTerminal,
+            ),
+        )
+        step_id = cursor.fetchone()["id"]
+        step_id_by_code[step.stepCode] = step_id
+
+        policy = step.assignmentPolicy
+        cursor.execute(
+            """
+            INSERT INTO workflow_step_assignment_policy (
+                step_definition_id,
+                approval_mode,
+                required_approvals_count,
+                priority_escalation_enabled,
+                escalation_timeout_seconds,
+                reminder_interval_seconds,
+                max_escalation_count
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                step_id,
+                policy.approvalMode,
+                policy.requiredApprovalsCount,
+                policy.priorityEscalationEnabled,
+                policy.escalationTimeoutSeconds,
+                policy.reminderIntervalSeconds,
+                policy.maxEscalationCount,
+            ),
+        )
+
+        if step.notificationTemplate and (
+            step.notificationTemplate.titleTemplate or step.notificationTemplate.bodyTemplate
+        ):
+            cursor.execute(
+                """
+                INSERT INTO notification_template (
+                    workflow_version_id,
+                    step_definition_id,
+                    event_type,
+                    channel,
+                    title_template,
+                    body_template,
+                    allow_actor_override,
+                    supported_variables
+                )
+                VALUES (%s, %s, 'task_created', 'in_app', %s, %s, %s, %s)
+                """,
+                (
+                    version_id,
+                    step_id,
+                    step.notificationTemplate.titleTemplate,
+                    step.notificationTemplate.bodyTemplate,
+                    step.notificationTemplate.allowActorOverride,
+                    Json(
+                        [
+                            "workflowName",
+                            "stepLabel",
+                            "stepCode",
+                            "actorEmail",
+                        ]
+                    ),
+                ),
+            )
+
+        if step.subworkflowMapping:
+            cursor.execute(
+                """
+                INSERT INTO workflow_step_mapping (
+                    step_definition_id,
+                    child_workflow_definition_id,
+                    child_workflow_version_id,
+                    trigger_mode,
+                    input_mapping,
+                    output_mapping,
+                    completion_action,
+                    failure_action
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    step_id,
+                    step.subworkflowMapping.childWorkflowDefinitionId,
+                    step.subworkflowMapping.childWorkflowVersionId,
+                    step.subworkflowMapping.triggerMode,
+                    Json(step.subworkflowMapping.inputMapping),
+                    Json(step.subworkflowMapping.outputMapping),
+                    step.subworkflowMapping.completionAction,
+                    step.subworkflowMapping.failureAction,
+                ),
+            )
+
+        for association in step.associations:
+            cursor.execute(
+                """
+                INSERT INTO workflow_step_association (
+                    step_definition_id,
+                    association_type,
+                    association_value,
+                    can_approve,
+                    can_reject,
+                    can_revert,
+                    priority,
+                    notification_order,
+                    escalation_after_seconds,
+                    is_active
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true)
+                """,
+                (
+                    step_id,
+                    association.associationType,
+                    association.associationValue,
+                    association.canApprove,
+                    association.canReject,
+                    association.canRevert,
+                    association.priority,
+                    association.notificationOrder,
+                    association.escalationAfterSeconds,
+                ),
+            )
+
+    for transition in payload.transitions:
+        cursor.execute(
+            """
+            INSERT INTO workflow_transition_definition (
+                workflow_version_id,
+                from_step_definition_id,
+                to_step_definition_id,
+                action_type,
+                action_code,
+                transition_label,
+                description,
+                condition_expression,
+                priority
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                version_id,
+                step_id_by_code[transition.fromStepCode],
+                step_id_by_code[transition.toStepCode] if transition.toStepCode else None,
+                transition.actionType,
+                transition.actionCode,
+                transition.transitionLabel,
+                transition.description,
+                transition.conditionExpression,
+                transition.priority,
+            ),
+        )
+
+    return version_id, next_version_no
+
+
 @router.get("", response_model=WorkflowDefinitionListResponse)
 def list_workflow_definitions(
     _: AuthenticatedUser = Depends(get_current_user),
@@ -488,8 +719,6 @@ def create_workflow_definition(
     payload: WorkflowDefinitionCreate,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowDefinitionCreateResponse:
-    graph_json, builder_layout = _validate_workflow(payload)
-
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -503,223 +732,7 @@ def create_workflow_definition(
                 )
                 definition_id = cursor.fetchone()["id"]
 
-                cursor.execute(
-                    """
-                    INSERT INTO workflow_definition_version (
-                        workflow_definition_id,
-                        version_no,
-                        is_published,
-                        version_label,
-                        definition_snapshot,
-                        graph_json,
-                        builder_layout,
-                        created_by
-                    )
-                    VALUES (%s, 1, false, 'v1', %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        definition_id,
-                        Json(payload.model_dump(mode="json")),
-                        Json(graph_json),
-                        Json(builder_layout),
-                        user.user_id,
-                    ),
-                )
-                version_id = cursor.fetchone()["id"]
-
-                step_id_by_code: dict[str, str] = {}
-                for step in payload.steps:
-                    cursor.execute(
-                        """
-                        INSERT INTO workflow_step_definition (
-                            workflow_version_id,
-                            step_code,
-                            step_label,
-                            description,
-                            step_type,
-                            sequence_hint,
-                            allow_revert,
-                            remark_required_on_approve,
-                            remark_required_on_reject,
-                            remark_required_on_revert,
-                            max_visits_per_instance,
-                            form_schema,
-                            config,
-                            is_terminal
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING id
-                        """,
-                        (
-                            version_id,
-                            step.stepCode,
-                            step.stepLabel,
-                            step.description,
-                            step.stepType,
-                            step.sequenceHint,
-                            step.allowRevert,
-                            step.remarkRequiredOnApprove,
-                            step.remarkRequiredOnReject,
-                            step.remarkRequiredOnRevert,
-                            step.maxVisitsPerInstance,
-                            Json(step.formSchema),
-                            Json(step.config),
-                            step.isTerminal,
-                        ),
-                    )
-                    step_id = cursor.fetchone()["id"]
-                    step_id_by_code[step.stepCode] = step_id
-
-                    policy = step.assignmentPolicy
-                    cursor.execute(
-                        """
-                        INSERT INTO workflow_step_assignment_policy (
-                            step_definition_id,
-                            approval_mode,
-                            required_approvals_count,
-                            priority_escalation_enabled,
-                            escalation_timeout_seconds,
-                            reminder_interval_seconds,
-                            max_escalation_count
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            step_id,
-                            policy.approvalMode,
-                            policy.requiredApprovalsCount,
-                            policy.priorityEscalationEnabled,
-                            policy.escalationTimeoutSeconds,
-                            policy.reminderIntervalSeconds,
-                            policy.maxEscalationCount,
-                        ),
-                    )
-
-                    if step.notificationTemplate and (
-                        step.notificationTemplate.titleTemplate
-                        or step.notificationTemplate.bodyTemplate
-                    ):
-                        cursor.execute(
-                            """
-                            INSERT INTO notification_template (
-                                workflow_version_id,
-                                step_definition_id,
-                                event_type,
-                                channel,
-                                title_template,
-                                body_template,
-                                allow_actor_override,
-                                supported_variables
-                            )
-                            VALUES (%s, %s, 'task_created', 'in_app', %s, %s, %s, %s)
-                            """,
-                            (
-                                version_id,
-                                step_id,
-                                step.notificationTemplate.titleTemplate,
-                                step.notificationTemplate.bodyTemplate,
-                                step.notificationTemplate.allowActorOverride,
-                                Json(
-                                    [
-                                        "workflowName",
-                                        "stepLabel",
-                                        "stepCode",
-                                        "actorEmail",
-                                    ]
-                                ),
-                            ),
-                        )
-
-                    if step.subworkflowMapping:
-                        cursor.execute(
-                            """
-                            INSERT INTO workflow_step_mapping (
-                                step_definition_id,
-                                child_workflow_definition_id,
-                                child_workflow_version_id,
-                                trigger_mode,
-                                input_mapping,
-                                output_mapping,
-                                completion_action,
-                                failure_action
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                step_id,
-                                step.subworkflowMapping.childWorkflowDefinitionId,
-                                step.subworkflowMapping.childWorkflowVersionId,
-                                step.subworkflowMapping.triggerMode,
-                                Json(step.subworkflowMapping.inputMapping),
-                                Json(step.subworkflowMapping.outputMapping),
-                                step.subworkflowMapping.completionAction,
-                                step.subworkflowMapping.failureAction,
-                            ),
-                        )
-
-                    for association in step.associations:
-                        cursor.execute(
-                            """
-                            INSERT INTO workflow_step_association (
-                                step_definition_id,
-                                association_type,
-                                association_value,
-                                can_approve,
-                                can_reject,
-                                can_revert,
-                                priority,
-                                notification_order,
-                                escalation_after_seconds,
-                                is_active
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true)
-                            """,
-                            (
-                                step_id,
-                                association.associationType,
-                                association.associationValue,
-                                association.canApprove,
-                                association.canReject,
-                                association.canRevert,
-                                association.priority,
-                                association.notificationOrder,
-                                association.escalationAfterSeconds,
-                            ),
-                        )
-
-                for transition in payload.transitions:
-                    cursor.execute(
-                        """
-                        INSERT INTO workflow_transition_definition (
-                            workflow_version_id,
-                            from_step_definition_id,
-                            to_step_definition_id,
-                            action_type,
-                            action_code,
-                            transition_label,
-                            description,
-                            condition_expression,
-                            priority
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            version_id,
-                            step_id_by_code[transition.fromStepCode],
-                            (
-                                step_id_by_code[transition.toStepCode]
-                                if transition.toStepCode
-                                else None
-                            ),
-                            transition.actionType,
-                            transition.actionCode,
-                            transition.transitionLabel,
-                            transition.description,
-                            transition.conditionExpression,
-                            transition.priority,
-                        ),
-                    )
+                _insert_workflow_version(cursor, definition_id, payload, user)
 
             connection.commit()
     except UniqueViolation as error:
@@ -729,3 +742,97 @@ def create_workflow_definition(
         ) from error
 
     return WorkflowDefinitionCreateResponse(item=_load_workflow_detail(str(definition_id)))
+
+
+@router.put("/{definition_id}", response_model=WorkflowDefinitionCreateResponse)
+def update_workflow_definition(
+    definition_id: str,
+    payload: WorkflowDefinitionCreate,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> WorkflowDefinitionCreateResponse:
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM workflow_definition
+                WHERE id = %s
+                """,
+                (definition_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Workflow definition not found.",
+                )
+
+            cursor.execute(
+                """
+                UPDATE workflow_definition
+                SET key = %s, name = %s, description = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (payload.key, payload.name, payload.description, definition_id),
+            )
+            _insert_workflow_version(cursor, definition_id, payload, user)
+        connection.commit()
+
+    return WorkflowDefinitionCreateResponse(item=_load_workflow_detail(definition_id))
+
+
+@router.post("/{definition_id}/publish", response_model=WorkflowDefinitionCreateResponse)
+def publish_workflow_definition(
+    definition_id: str,
+    _: AuthenticatedUser = Depends(get_current_user),
+) -> WorkflowDefinitionCreateResponse:
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM workflow_definition
+                WHERE id = %s
+                """,
+                (definition_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Workflow definition not found.",
+                )
+
+            cursor.execute(
+                """
+                UPDATE workflow_definition_version
+                SET is_published = false
+                WHERE workflow_definition_id = %s
+                """,
+                (definition_id,),
+            )
+            cursor.execute(
+                """
+                UPDATE workflow_definition_version
+                SET is_published = true
+                WHERE id = (
+                    SELECT id
+                    FROM workflow_definition_version
+                    WHERE workflow_definition_id = %s
+                    ORDER BY version_no DESC
+                    LIMIT 1
+                )
+                """,
+                (definition_id,),
+            )
+            cursor.execute(
+                """
+                UPDATE workflow_definition
+                SET status = 'active', updated_at = now()
+                WHERE id = %s
+                """,
+                (definition_id,),
+            )
+        connection.commit()
+
+    return WorkflowDefinitionCreateResponse(item=_load_workflow_detail(definition_id))

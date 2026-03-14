@@ -579,6 +579,7 @@ export function WorkflowBuilder() {
   const [status, setStatus] = useState<string>("Ready to create a workflow definition.")
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [isBusy, setIsBusy] = useState(false)
   const [isLoadingDefinitions, setIsLoadingDefinitions] = useState(true)
 
   const graphNodes = useMemo(() => createNodes(steps), [steps])
@@ -633,8 +634,13 @@ export function WorkflowBuilder() {
 
     try {
       const token = await getToken()
-      const response = await fetch(`${resolveApiBaseUrl()}/api/v1/workflow-definitions`, {
-        method: "POST",
+      const isEditingExisting = Boolean(selectedDefinitionId)
+      const response = await fetch(
+        `${resolveApiBaseUrl()}/api/v1/workflow-definitions${
+          isEditingExisting ? `/${selectedDefinitionId}` : ""
+        }`,
+        {
+        method: isEditingExisting ? "PUT" : "POST",
         headers: {
           "content-type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -670,7 +676,9 @@ export function WorkflowBuilder() {
       }
 
       setSelectedDefinitionId(payload.item.id)
-      setStatus(`Saved '${payload.item.name}' as version ${payload.item.latestVersionNo}.`)
+      setStatus(
+        `${isEditingExisting ? "Updated" : "Saved"} '${payload.item.name}' as version ${payload.item.latestVersionNo}.`,
+      )
       await loadDefinitions()
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Save failed.")
@@ -710,6 +718,62 @@ export function WorkflowBuilder() {
       setStatus(`Loaded '${normalized.name}' from Neon into the builder.`)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load definition.")
+    }
+  }
+
+  async function publishDefinition() {
+    if (!selectedDefinitionId) {
+      setError("Load or save a workflow definition before publishing it.")
+      return
+    }
+
+    setIsBusy(true)
+    setError(null)
+    setStatus("Publishing latest workflow version...")
+
+    try {
+      const token = await getToken()
+      const response = await fetch(
+        `${resolveApiBaseUrl()}/api/v1/workflow-definitions/${selectedDefinitionId}/publish`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      )
+      const payload = (await response.json()) as
+        | { item?: WorkflowDefinitionDetail; detail?: string }
+        | WorkflowDefinitionDetail
+
+      if (!response.ok) {
+        throw new Error(
+          typeof payload === "object" && payload !== null && "detail" in payload
+            ? payload.detail || "Unable to publish workflow definition."
+            : "Unable to publish workflow definition.",
+        )
+      }
+
+      const definition =
+        typeof payload === "object" && payload !== null && "item" in payload
+          ? payload.item
+          : null
+
+      if (definition) {
+        setStatus(`Published '${definition.name}' version ${definition.latestVersionNo}.`)
+      } else {
+        setStatus("Published workflow definition.")
+      }
+      await loadDefinitions()
+    } catch (publishError) {
+      setError(
+        publishError instanceof Error
+          ? publishError.message
+          : "Unable to publish workflow definition.",
+      )
+      setStatus("Workflow publish failed.")
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -913,6 +977,13 @@ export function WorkflowBuilder() {
             <div className="flex flex-wrap gap-3 md:col-span-2">
               <Button disabled={isSaving} onClick={handleSave}>
                 {isSaving ? "Saving..." : "Save workflow to Neon"}
+              </Button>
+              <Button
+                disabled={!selectedDefinitionId || isBusy}
+                onClick={publishDefinition}
+                variant="outline"
+              >
+                Publish latest version
               </Button>
               <Badge variant="outline">
                 {selectedDefinitionId ? `Loaded: ${selectedDefinitionId}` : "New definition"}
