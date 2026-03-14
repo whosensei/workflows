@@ -31,6 +31,7 @@ type ApprovalMode = "priority_chain" | "approve_any_one" | "approve_all" | "noti
 type StepType = "start" | "end" | "human_task" | "system_task" | "subworkflow" | "decision"
 type ActionType = "approve" | "reject" | "revert" | "custom"
 type AssociationType = "user" | "role" | "group" | "sql_rule"
+type TriggerMode = "sync_wait" | "async_wait"
 
 type BuilderAssociation = {
   associationType: AssociationType
@@ -52,6 +53,22 @@ type BuilderAssignmentPolicy = {
   maxEscalationCount: string
 }
 
+type BuilderNotificationTemplate = {
+  titleTemplate: string
+  bodyTemplate: string
+  allowActorOverride: boolean
+}
+
+type BuilderSubworkflowMapping = {
+  childWorkflowDefinitionId: string
+  childWorkflowVersionId: string
+  triggerMode: TriggerMode
+  inputMapping: string
+  outputMapping: string
+  completionAction: ActionType
+  failureAction: ActionType
+}
+
 type BuilderStep = {
   stepCode: string
   stepLabel: string
@@ -64,6 +81,8 @@ type BuilderStep = {
   remarkRequiredOnRevert: boolean
   maxVisitsPerInstance: string
   isTerminal: boolean
+  notificationTemplate: BuilderNotificationTemplate
+  subworkflowMapping: BuilderSubworkflowMapping | null
   assignmentPolicy: BuilderAssignmentPolicy
   associations: BuilderAssociation[]
 }
@@ -112,6 +131,8 @@ type WorkflowDefinitionDetail = {
       remarkRequiredOnRevert: boolean
       maxVisitsPerInstance?: number | null
       isTerminal?: boolean
+      notificationTemplate?: Partial<BuilderNotificationTemplate> | null
+      subworkflowMapping?: Partial<BuilderSubworkflowMapping> | null
       assignmentPolicy?: Partial<BuilderAssignmentPolicy>
       associations?: Array<Partial<BuilderAssociation>>
     }>
@@ -142,6 +163,20 @@ type WorkflowDefinitionDetail = {
     remarkRequiredOnRevert: boolean
     maxVisitsPerInstance: number | null
     isTerminal: boolean
+    notificationTemplate?: {
+      titleTemplate: string
+      bodyTemplate: string
+      allowActorOverride: boolean
+    } | null
+    subworkflowMapping?: {
+      childWorkflowDefinitionId: string
+      childWorkflowVersionId: string | null
+      triggerMode: TriggerMode
+      inputMapping: Record<string, unknown>
+      outputMapping: Record<string, unknown>
+      completionAction: ActionType
+      failureAction: ActionType
+    } | null
     assignmentPolicy?: {
       approvalMode: ApprovalMode
       requiredApprovalsCount: number | null
@@ -193,6 +228,22 @@ const emptyPolicy = (): BuilderAssignmentPolicy => ({
   maxEscalationCount: "",
 })
 
+const emptyNotificationTemplate = (): BuilderNotificationTemplate => ({
+  titleTemplate: "",
+  bodyTemplate: "",
+  allowActorOverride: true,
+})
+
+const emptySubworkflowMapping = (): BuilderSubworkflowMapping => ({
+  childWorkflowDefinitionId: "",
+  childWorkflowVersionId: "",
+  triggerMode: "sync_wait",
+  inputMapping: "{\n  \"source\": \"parent\"\n}",
+  outputMapping: "{\n  \"childResult\": \"$.status\"\n}",
+  completionAction: "approve",
+  failureAction: "reject",
+})
+
 const initialSteps = (): BuilderStep[] => [
   {
     stepCode: "start_request",
@@ -206,6 +257,8 @@ const initialSteps = (): BuilderStep[] => [
     remarkRequiredOnRevert: false,
     maxVisitsPerInstance: "",
     isTerminal: false,
+    notificationTemplate: emptyNotificationTemplate(),
+    subworkflowMapping: null,
     assignmentPolicy: emptyPolicy(),
     associations: [],
   },
@@ -221,6 +274,12 @@ const initialSteps = (): BuilderStep[] => [
     remarkRequiredOnRevert: true,
     maxVisitsPerInstance: "3",
     isTerminal: false,
+    notificationTemplate: {
+      titleTemplate: "Approval needed: {stepLabel}",
+      bodyTemplate: "{workflowName} is waiting for {actorEmail} on {stepCode}.",
+      allowActorOverride: true,
+    },
+    subworkflowMapping: null,
     assignmentPolicy: {
       ...emptyPolicy(),
       approvalMode: "priority_chain",
@@ -258,6 +317,8 @@ const initialSteps = (): BuilderStep[] => [
     remarkRequiredOnRevert: false,
     maxVisitsPerInstance: "",
     isTerminal: true,
+    notificationTemplate: emptyNotificationTemplate(),
+    subworkflowMapping: null,
     assignmentPolicy: emptyPolicy(),
     associations: [],
   },
@@ -288,6 +349,22 @@ const initialTransitions = (): BuilderTransition[] => [
 
 function numberOrNull(value: string) {
   return value.trim() === "" ? null : Number(value)
+}
+
+function parseObjectText(value: string) {
+  if (!value.trim()) {
+    return {}
+  }
+
+  try {
+    return JSON.parse(value) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+function cloneKey(baseKey: string) {
+  return `${baseKey}_copy_${Date.now().toString().slice(-6)}`
 }
 
 function resolveApiBaseUrl() {
@@ -364,6 +441,26 @@ function toPayload(
       remarkRequiredOnRevert: step.remarkRequiredOnRevert,
       maxVisitsPerInstance: numberOrNull(step.maxVisitsPerInstance),
       isTerminal: step.isTerminal,
+      notificationTemplate:
+        step.notificationTemplate.titleTemplate || step.notificationTemplate.bodyTemplate
+          ? {
+              titleTemplate: step.notificationTemplate.titleTemplate,
+              bodyTemplate: step.notificationTemplate.bodyTemplate,
+              allowActorOverride: step.notificationTemplate.allowActorOverride,
+            }
+          : null,
+      subworkflowMapping: step.subworkflowMapping
+        ? {
+            childWorkflowDefinitionId: step.subworkflowMapping.childWorkflowDefinitionId,
+            childWorkflowVersionId:
+              step.subworkflowMapping.childWorkflowVersionId || null,
+            triggerMode: step.subworkflowMapping.triggerMode,
+            inputMapping: parseObjectText(step.subworkflowMapping.inputMapping),
+            outputMapping: parseObjectText(step.subworkflowMapping.outputMapping),
+            completionAction: step.subworkflowMapping.completionAction,
+            failureAction: step.subworkflowMapping.failureAction,
+          }
+        : null,
       assignmentPolicy: {
         approvalMode: step.assignmentPolicy.approvalMode,
         requiredApprovalsCount: numberOrNull(step.assignmentPolicy.requiredApprovalsCount),
@@ -415,6 +512,26 @@ function fromDetail(detail: WorkflowDefinitionDetail) {
       remarkRequiredOnRevert: step.remarkRequiredOnRevert,
       maxVisitsPerInstance: step.maxVisitsPerInstance?.toString() ?? "",
       isTerminal: step.isTerminal,
+      notificationTemplate: {
+        titleTemplate: step.notificationTemplate?.titleTemplate ?? "",
+        bodyTemplate: step.notificationTemplate?.bodyTemplate ?? "",
+        allowActorOverride: step.notificationTemplate?.allowActorOverride ?? true,
+      },
+      subworkflowMapping: step.subworkflowMapping
+        ? {
+            childWorkflowDefinitionId:
+              step.subworkflowMapping.childWorkflowDefinitionId ?? "",
+            childWorkflowVersionId:
+              step.subworkflowMapping.childWorkflowVersionId?.toString() ?? "",
+            triggerMode: (step.subworkflowMapping.triggerMode as TriggerMode) ?? "sync_wait",
+            inputMapping: JSON.stringify(step.subworkflowMapping.inputMapping ?? {}, null, 2),
+            outputMapping: JSON.stringify(step.subworkflowMapping.outputMapping ?? {}, null, 2),
+            completionAction:
+              (step.subworkflowMapping.completionAction as ActionType) ?? "approve",
+            failureAction:
+              (step.subworkflowMapping.failureAction as ActionType) ?? "reject",
+          }
+        : null,
       assignmentPolicy: {
         approvalMode: step.assignmentPolicy?.approvalMode ?? "priority_chain",
         requiredApprovalsCount: step.assignmentPolicy?.requiredApprovalsCount?.toString() ?? "",
@@ -466,6 +583,7 @@ export function WorkflowBuilder() {
   const [status, setStatus] = useState<string>("Ready to create a workflow definition.")
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [isBusy, setIsBusy] = useState(false)
   const [isLoadingDefinitions, setIsLoadingDefinitions] = useState(true)
 
   const graphNodes = useMemo(() => createNodes(steps), [steps])
@@ -520,8 +638,13 @@ export function WorkflowBuilder() {
 
     try {
       const token = await getToken()
-      const response = await fetch(`${resolveApiBaseUrl()}/api/v1/workflow-definitions`, {
-        method: "POST",
+      const isEditingExisting = Boolean(selectedDefinitionId)
+      const response = await fetch(
+        `${resolveApiBaseUrl()}/api/v1/workflow-definitions${
+          isEditingExisting ? `/${selectedDefinitionId}` : ""
+        }`,
+        {
+        method: isEditingExisting ? "PUT" : "POST",
         headers: {
           "content-type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -557,7 +680,9 @@ export function WorkflowBuilder() {
       }
 
       setSelectedDefinitionId(payload.item.id)
-      setStatus(`Saved '${payload.item.name}' as version ${payload.item.latestVersionNo}.`)
+      setStatus(
+        `${isEditingExisting ? "Updated" : "Saved"} '${payload.item.name}' as version ${payload.item.latestVersionNo}.`,
+      )
       await loadDefinitions()
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Save failed.")
@@ -600,6 +725,131 @@ export function WorkflowBuilder() {
     }
   }
 
+  async function publishDefinition() {
+    if (!selectedDefinitionId) {
+      setError("Load or save a workflow definition before publishing it.")
+      return
+    }
+
+    setIsBusy(true)
+    setError(null)
+    setStatus("Publishing latest workflow version...")
+
+    try {
+      const token = await getToken()
+      const response = await fetch(
+        `${resolveApiBaseUrl()}/api/v1/workflow-definitions/${selectedDefinitionId}/publish`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      )
+      const payload = (await response.json()) as
+        | { item?: WorkflowDefinitionDetail; detail?: string }
+        | WorkflowDefinitionDetail
+
+      if (!response.ok) {
+        throw new Error(
+          typeof payload === "object" && payload !== null && "detail" in payload
+            ? payload.detail || "Unable to publish workflow definition."
+            : "Unable to publish workflow definition.",
+        )
+      }
+
+      const definition =
+        typeof payload === "object" && payload !== null && "item" in payload
+          ? payload.item
+          : null
+
+      if (definition) {
+        setStatus(`Published '${definition.name}' version ${definition.latestVersionNo}.`)
+      } else {
+        setStatus("Published workflow definition.")
+      }
+      await loadDefinitions()
+    } catch (publishError) {
+      setError(
+        publishError instanceof Error
+          ? publishError.message
+          : "Unable to publish workflow definition.",
+      )
+      setStatus("Workflow publish failed.")
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  async function cloneDefinition() {
+    if (!selectedDefinitionId) {
+      setError("Load a workflow definition before duplicating it.")
+      return
+    }
+
+    setIsBusy(true)
+    setError(null)
+    setStatus("Duplicating workflow into a new definition...")
+
+    try {
+      const token = await getToken()
+      const response = await fetch(
+        `${resolveApiBaseUrl()}/api/v1/workflow-definitions/${selectedDefinitionId}/clone`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            key: cloneKey(key),
+            name: `${name} Copy`,
+            description,
+          }),
+        },
+      )
+      const payload = (await response.json()) as
+        | { item?: WorkflowDefinitionDetail; detail?: string }
+        | WorkflowDefinitionDetail
+
+      if (!response.ok) {
+        throw new Error(
+          typeof payload === "object" && payload !== null && "detail" in payload
+            ? payload.detail || "Unable to duplicate workflow definition."
+            : "Unable to duplicate workflow definition.",
+        )
+      }
+
+      const definition =
+        typeof payload === "object" && payload !== null && "item" in payload
+          ? payload.item
+          : null
+
+      if (!definition) {
+        throw new Error("The API did not return the duplicated workflow definition.")
+      }
+
+      const normalized = fromDetail(definition)
+      setKey(normalized.key)
+      setName(normalized.name)
+      setDescription(normalized.description)
+      setSteps(normalized.steps)
+      setTransitions(normalized.transitions)
+      setSelectedDefinitionId(definition.id)
+      setStatus(`Duplicated '${name}' into new workflow '${definition.name}'.`)
+      await loadDefinitions()
+    } catch (cloneError) {
+      setError(
+        cloneError instanceof Error
+          ? cloneError.message
+          : "Unable to duplicate workflow definition.",
+      )
+      setStatus("Workflow duplication failed.")
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
   function addStep() {
     setSteps((current) => [
       ...current,
@@ -615,6 +865,8 @@ export function WorkflowBuilder() {
         remarkRequiredOnRevert: false,
         maxVisitsPerInstance: "",
         isTerminal: false,
+        notificationTemplate: emptyNotificationTemplate(),
+        subworkflowMapping: null,
         assignmentPolicy: emptyPolicy(),
         associations: [],
       },
@@ -652,6 +904,47 @@ export function WorkflowBuilder() {
           ? { ...step, assignmentPolicy: { ...step.assignmentPolicy, ...patch } }
           : step,
       ),
+    )
+  }
+
+  function updateNotificationTemplate(
+    index: number,
+    patch: Partial<BuilderNotificationTemplate>,
+  ) {
+    setSteps((current) =>
+      current.map((step, currentIndex) =>
+        currentIndex === index
+          ? {
+              ...step,
+              notificationTemplate: { ...step.notificationTemplate, ...patch },
+            }
+          : step,
+      ),
+    )
+  }
+
+  function updateSubworkflowMapping(
+    index: number,
+    patch: Partial<BuilderSubworkflowMapping> | null,
+  ) {
+    setSteps((current) =>
+      current.map((step, currentIndex) => {
+        if (currentIndex !== index) {
+          return step
+        }
+
+        if (patch === null) {
+          return { ...step, subworkflowMapping: null }
+        }
+
+        return {
+          ...step,
+          subworkflowMapping: {
+            ...(step.subworkflowMapping ?? emptySubworkflowMapping()),
+            ...patch,
+          },
+        }
+      }),
     )
   }
 
@@ -758,6 +1051,20 @@ export function WorkflowBuilder() {
               <Button disabled={isSaving} onClick={handleSave}>
                 {isSaving ? "Saving..." : "Save workflow to Neon"}
               </Button>
+              <Button
+                disabled={!selectedDefinitionId || isBusy}
+                onClick={publishDefinition}
+                variant="outline"
+              >
+                Publish latest version
+              </Button>
+              <Button
+                disabled={!selectedDefinitionId || isBusy}
+                onClick={cloneDefinition}
+                variant="outline"
+              >
+                Duplicate as new workflow
+              </Button>
               <Badge variant="outline">
                 {selectedDefinitionId ? `Loaded: ${selectedDefinitionId}` : "New definition"}
               </Badge>
@@ -847,9 +1154,16 @@ export function WorkflowBuilder() {
                   <Label>Step type</Label>
                   <select
                     className="flex h-9 w-full rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                    onChange={(event) =>
-                      updateStep(stepIndex, { stepType: event.target.value as StepType })
-                    }
+                    onChange={(event) => {
+                      const nextType = event.target.value as StepType
+                      updateStep(stepIndex, { stepType: nextType })
+                      if (nextType === "subworkflow" && !step.subworkflowMapping) {
+                        updateSubworkflowMapping(stepIndex, emptySubworkflowMapping())
+                      }
+                      if (nextType !== "subworkflow" && step.subworkflowMapping) {
+                        updateSubworkflowMapping(stepIndex, null)
+                      }
+                    }}
                     value={step.stepType}
                   >
                     <option value="start">start</option>
@@ -984,6 +1298,161 @@ export function WorkflowBuilder() {
                   </div>
                 </div>
               </div>
+
+              <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-4">
+                <div>
+                  <p className="font-medium">Notification message</p>
+                  <p className="text-sm text-muted-foreground">
+                    Configure the in-app message sent when this step becomes actionable.
+                  </p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Notification title</Label>
+                    <Input
+                      onChange={(event) =>
+                        updateNotificationTemplate(stepIndex, {
+                          titleTemplate: event.target.value,
+                        })
+                      }
+                      placeholder="Approval needed: {stepLabel}"
+                      value={step.notificationTemplate.titleTemplate}
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm md:self-end">
+                    <input
+                      checked={step.notificationTemplate.allowActorOverride}
+                      onChange={(event) =>
+                        updateNotificationTemplate(stepIndex, {
+                          allowActorOverride: event.target.checked,
+                        })
+                      }
+                      type="checkbox"
+                    />
+                    Allow actor override
+                  </label>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Notification body</Label>
+                    <textarea
+                      className="min-h-20 w-full rounded-xl border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      onChange={(event) =>
+                        updateNotificationTemplate(stepIndex, {
+                          bodyTemplate: event.target.value,
+                        })
+                      }
+                      placeholder="{workflowName} is waiting for {actorEmail} on {stepCode}."
+                      value={step.notificationTemplate.bodyTemplate}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {step.stepType === "subworkflow" ? (
+                <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-4">
+                  <div>
+                    <p className="font-medium">Subworkflow mapping</p>
+                    <p className="text-sm text-muted-foreground">
+                      Pause the parent, run a child workflow, then resume using mapped output.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label>Child workflow definition</Label>
+                      <select
+                        className="flex h-9 w-full rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onChange={(event) =>
+                          updateSubworkflowMapping(stepIndex, {
+                            childWorkflowDefinitionId: event.target.value,
+                          })
+                        }
+                        value={step.subworkflowMapping?.childWorkflowDefinitionId ?? ""}
+                      >
+                        <option value="">Select child workflow</option>
+                        {definitions
+                          .filter((definition) => definition.id !== selectedDefinitionId)
+                          .map((definition) => (
+                            <option key={`${stepIndex}-child-${definition.id}`} value={definition.id}>
+                              {definition.name} ({definition.key})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Trigger mode</Label>
+                      <select
+                        className="flex h-9 w-full rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onChange={(event) =>
+                          updateSubworkflowMapping(stepIndex, {
+                            triggerMode: event.target.value as TriggerMode,
+                          })
+                        }
+                        value={step.subworkflowMapping?.triggerMode ?? "sync_wait"}
+                      >
+                        <option value="sync_wait">sync_wait</option>
+                        <option value="async_wait">async_wait</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Completion action</Label>
+                      <select
+                        className="flex h-9 w-full rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onChange={(event) =>
+                          updateSubworkflowMapping(stepIndex, {
+                            completionAction: event.target.value as ActionType,
+                          })
+                        }
+                        value={step.subworkflowMapping?.completionAction ?? "approve"}
+                      >
+                        <option value="approve">approve</option>
+                        <option value="reject">reject</option>
+                        <option value="revert">revert</option>
+                        <option value="custom">custom</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Failure action</Label>
+                      <select
+                        className="flex h-9 w-full rounded-xl border border-input bg-transparent px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onChange={(event) =>
+                          updateSubworkflowMapping(stepIndex, {
+                            failureAction: event.target.value as ActionType,
+                          })
+                        }
+                        value={step.subworkflowMapping?.failureAction ?? "reject"}
+                      >
+                        <option value="approve">approve</option>
+                        <option value="reject">reject</option>
+                        <option value="revert">revert</option>
+                        <option value="custom">custom</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Input mapping JSON</Label>
+                      <textarea
+                        className="min-h-28 w-full rounded-xl border border-input bg-transparent px-3 py-2 text-sm font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onChange={(event) =>
+                          updateSubworkflowMapping(stepIndex, {
+                            inputMapping: event.target.value,
+                          })
+                        }
+                        value={step.subworkflowMapping?.inputMapping ?? "{}"}
+                      />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Output mapping JSON</Label>
+                      <textarea
+                        className="min-h-28 w-full rounded-xl border border-input bg-transparent px-3 py-2 text-sm font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onChange={(event) =>
+                          updateSubworkflowMapping(stepIndex, {
+                            outputMapping: event.target.value,
+                          })
+                        }
+                        value={step.subworkflowMapping?.outputMapping ?? "{}"}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">

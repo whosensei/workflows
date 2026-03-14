@@ -1,5 +1,6 @@
 "use client"
 
+import type { Edge, Node } from "@xyflow/react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
@@ -17,6 +18,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { authClient } from "@/lib/auth-client"
 import { publicEnv } from "@/lib/public-env"
+import { WorkflowInstanceGraph } from "@/components/workflow-instance-graph"
 
 type WorkflowDefinitionSummary = {
   id: string
@@ -74,6 +76,19 @@ type WorkflowInstanceDetail = WorkflowInstanceSummary & {
   inputData: Record<string, unknown>
   contextData: Record<string, unknown>
   outputData: Record<string, unknown>
+  graphJson: {
+    steps?: Array<{ stepCode: string; stepLabel: string }>
+    transitions?: Array<{
+      fromStepCode: string
+      toStepCode?: string | null
+      transitionLabel?: string
+      actionType?: string
+    }>
+  }
+  builderLayout: {
+    nodes?: Node[]
+    edges?: Edge[]
+  }
   steps: WorkflowStepVisit[]
   actions: WorkflowAction[]
 }
@@ -661,6 +676,13 @@ export function RuntimeConsole() {
             <CardContent className="space-y-6">
               {selectedInstance ? (
                 <>
+                  <WorkflowInstanceGraph
+                    builderLayout={selectedInstance.builderLayout}
+                    currentStepCode={selectedInstance.currentStepCode}
+                    graphJson={selectedInstance.graphJson}
+                    steps={selectedInstance.steps}
+                  />
+
                   <div className="grid gap-4 md:grid-cols-4">
                     <div className="rounded-xl border border-border/70 bg-muted/20 p-4">
                       <p className="text-sm text-muted-foreground">Workflow</p>

@@ -10,6 +10,7 @@ ActionType = Literal["approve", "reject", "revert", "custom"]
 AssociationType = Literal["user", "role", "group", "sql_rule"]
 ApprovalMode = Literal["priority_chain", "approve_any_one", "approve_all", "notify_all"]
 StepType = Literal["start", "end", "human_task", "system_task", "subworkflow", "decision"]
+TriggerMode = Literal["sync_wait", "async_wait"]
 
 
 class WorkflowAssociationInput(BaseModel):
@@ -32,6 +33,22 @@ class WorkflowAssignmentPolicyInput(BaseModel):
     maxEscalationCount: int | None = None
 
 
+class WorkflowNotificationTemplateInput(BaseModel):
+    titleTemplate: str = ""
+    bodyTemplate: str = ""
+    allowActorOverride: bool = True
+
+
+class WorkflowStepMappingInput(BaseModel):
+    childWorkflowDefinitionId: UUID
+    childWorkflowVersionId: UUID | None = None
+    triggerMode: TriggerMode = "sync_wait"
+    inputMapping: dict = Field(default_factory=dict)
+    outputMapping: dict = Field(default_factory=dict)
+    completionAction: ActionType = "approve"
+    failureAction: ActionType = "reject"
+
+
 class WorkflowStepInput(BaseModel):
     stepCode: str = Field(min_length=1)
     stepLabel: str = Field(min_length=1)
@@ -46,6 +63,8 @@ class WorkflowStepInput(BaseModel):
     formSchema: dict = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
     isTerminal: bool = False
+    notificationTemplate: WorkflowNotificationTemplateInput | None = None
+    subworkflowMapping: WorkflowStepMappingInput | None = None
     assignmentPolicy: WorkflowAssignmentPolicyInput = Field(
         default_factory=WorkflowAssignmentPolicyInput
     )
@@ -72,11 +91,25 @@ class WorkflowDefinitionCreate(BaseModel):
     transitions: list[WorkflowTransitionInput]
 
 
+class WorkflowDefinitionCloneRequest(BaseModel):
+    key: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str | None = None
+
+
 class WorkflowAssociationResponse(WorkflowAssociationInput):
     id: UUID
 
 
 class WorkflowAssignmentPolicyResponse(WorkflowAssignmentPolicyInput):
+    id: UUID
+
+
+class WorkflowNotificationTemplateResponse(WorkflowNotificationTemplateInput):
+    id: UUID
+
+
+class WorkflowStepMappingResponse(WorkflowStepMappingInput):
     id: UUID
 
 
@@ -95,6 +128,8 @@ class WorkflowStepResponse(BaseModel):
     formSchema: dict
     config: dict
     isTerminal: bool
+    notificationTemplate: WorkflowNotificationTemplateResponse | None = None
+    subworkflowMapping: WorkflowStepMappingResponse | None = None
     assignmentPolicy: WorkflowAssignmentPolicyResponse | None = None
     associations: list[WorkflowAssociationResponse] = Field(default_factory=list)
 
